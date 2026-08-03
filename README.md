@@ -11,7 +11,8 @@ The spatial indexing follows the flexible multi-level S2 approach described in:
 
 - [`DDL.sql`](file://DDL.sql): Single SQL schema file defining all relational tables, S2 token tables, secondary indexes, and the `LEIGraph` Property Graph schema.
 - [`load_spanner.py`](file://load_spanner.py): Python loader script managed by `uv`. Parses LEI records, geocodes addresses, generates S2 leaf cell IDs and multi-level tokens, populates node & edge tables, and batches uploads into Spanner.
-- [`Makefile`](file://Makefile): Automation workflow for creating Spanner instances, initializing databases with DDL, updating schemas, and loading data.
+- [`query_spanner.py`](file://query_spanner.py): Sample Python script to query `LEIGraph` using S2 cell tokens and compute closest companies to customer coordinates (`--lat` and `--lng`).
+- [`Makefile`](file://Makefile): Automation workflow for creating Spanner instances, initializing databases with DDL, updating schemas, loading data, and running graph queries.
 - [`pyproject.toml`](file://pyproject.toml): Project dependencies for `uv`.
 - [`.env.example`](file://.env.example): Environment variable template.
 
@@ -69,4 +70,23 @@ cp .env.example .env
 - `make dbschema`: Updates the database DDL from [`DDL.sql`](file://DDL.sql).
 - `make dbload-dryrun`: Runs [`load_spanner.py`](file://load_spanner.py) in dry-run mode to verify parsing, geocoding, and S2 generation.
 - `make dbload`: Uploads graph nodes, edges, and S2 tokens into Cloud Spanner.
+- `make dbquery`: Executes the S2 Graph query against Spanner to find the 10 closest companies to Wilmington, Delaware.
+- `make dbquery-sql`: Previews the parameterized Spanner Graph SQL/GQL query without connecting.
 - `make instancecreate`: Creates a Cloud Spanner instance.
+
+---
+
+## Running with `uv`
+
+All scripts are executed via `uv`:
+
+```bash
+# Preview query and S2 token parameters:
+uv run query_spanner.py --print-sql
+
+# Execute query against Cloud Spanner:
+uv run query_spanner.py
+
+# Query closest entities with custom coordinates, S2 level, and limit:
+uv run query_spanner.py --lat 39.7459 --lng -75.5466 --s2-level 8 --limit 10
+```
