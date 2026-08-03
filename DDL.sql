@@ -19,7 +19,11 @@ CREATE TABLE Entities (
     ConformityFlag STRING(50),
     EntityLegalFormCode STRING(50),
     OtherLegalForm STRING(255),
-    RawData JSON
+    RawData JSON,
+    lc STRING(MAX) AS (LOWER(LegalName)) HIDDEN,
+    name_Tokens TOKENLIST AS (TOKENIZE_NGRAMS(lc, ngram_size_min=>2, ngram_size_max=>4)) HIDDEN,
+    name_FullText TOKENLIST AS (TOKENIZE_FULLTEXT(lc)) HIDDEN,
+    name_SubString TOKENLIST AS (TOKENIZE_SUBSTRING(lc)) HIDDEN
 ) PRIMARY KEY (LEI);
 
 CREATE TABLE EntityLocations (
@@ -61,6 +65,9 @@ CREATE INDEX IndexLocationS2TokensByToken ON LocationS2Tokens(S2Token, S2Level);
 
 -- Secondary index on exact location leaf cell IDs
 CREATE INDEX IndexEntityLocationsByS2CellId ON EntityLocations(S2CellId);
+
+-- Full-text, N-Gram, and Substring Search Index on Entity Legal Names
+CREATE SEARCH INDEX EntitiesNameSearchIndex ON Entities(name_Tokens, name_FullText, name_SubString);
 
 -- Property Graph Definition incorporating Entity and Location nodes with HAS_LOCATION relationship
 CREATE PROPERTY GRAPH LEIGraph

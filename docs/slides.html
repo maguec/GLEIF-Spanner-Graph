@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Geospatial Graph Search with S2 on Cloud Spanner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto+Mono:wght@400;500&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #FFFFFF;
+      --bg-secondary: #F8F9FA;
+      --bg-card: #FFFFFF;
+      --text-main: #202124;
+      --text-muted: #5F6368;
+      --border-color: #E8EAED;
+      --blue-accent: #1A73E8;
+      --blue-light: #E8F0FE;
+      --green-accent: #1E8E3E;
+      --green-light: #E6F4EA;
+      --red-accent: #D93025;
+      --red-light: #FCE8E6;
+      --font-heading: 'Google Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-body: 'Roboto', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-code: 'Roboto Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: #202124;
+      font-family: var(--font-body);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    /* 16:9 Presentation Stage */
+    .deck-container {
+      width: 100%;
+      max-width: 1100px;
+      aspect-ratio: 16 / 9;
+      background: var(--bg-primary);
+      border-radius: 12px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .slide {
+      display: none;
+      width: 100%;
+      height: 100%;
+      padding: 56px 64px;
+      flex-direction: column;
+      justify-content: space-between;
+      animation: fadeIn 0.25s ease-in-out;
+    }
+
+    .slide.active {
+      display: flex;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Slide Header */
+    .slide-header {
+      margin-bottom: 24px;
+    }
+
+    .slide-tag {
+      display: inline-block;
+      font-family: var(--font-heading);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--blue-accent);
+      background: var(--blue-light);
+      padding: 4px 10px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+
+    .slide-title {
+      font-family: var(--font-heading);
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--text-main);
+      letter-spacing: -0.5px;
+      line-height: 1.2;
+    }
+
+    .slide-subtitle {
+      font-size: 15px;
+      color: var(--text-muted);
+      margin-top: 6px;
+      font-weight: 400;
+    }
+
+    /* Slide Content */
+    .slide-body {
+      flex: 1;
+      display: flex;
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    /* Card Layouts */
+    .card {
+      flex: 1;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card-title {
+      font-family: var(--font-heading);
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #3C4043;
+    }
+
+    .card-list li {
+      position: relative;
+      padding-left: 18px;
+    }
+
+    .card-list li::before {
+      content: "•";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--blue-accent);
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .card.pro {
+      background: #FAFCF9;
+      border-color: #CEEAD6;
+    }
+
+    .card.pro .card-list li::before {
+      color: var(--green-accent);
+      content: "✓";
+      font-weight: bold;
+      font-size: 14px;
+    }
+
+    .card.con {
+      background: #FCF9F9;
+      border-color: #FAD2CF;
+    }
+
+    .card.con .card-list li::before {
+      color: var(--red-accent);
+      content: "✕";
+      font-weight: bold;
+      font-size: 14px;
+    }
+
+    /* Title Slide Specifics */
+    .title-slide {
+      justify-content: center;
+      align-items: flex-start;
+      padding: 64px 80px;
+    }
+
+    .title-slide h1 {
+      font-family: var(--font-heading);
+      font-size: 44px;
+      font-weight: 700;
+      color: var(--text-main);
+      line-height: 1.15;
+      margin-bottom: 16px;
+      letter-spacing: -1px;
+    }
+
+    .title-slide p {
+      font-size: 20px;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+      line-height: 1.4;
+      max-width: 800px;
+    }
+
+    .meta-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 16px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    /* Slide Footer */
+    .slide-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-color);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Navigation Controls */
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+      align-items: center;
+    }
+
+    .btn {
+      background: #3C4043;
+      border: none;
+      color: #FFFFFF;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: var(--font-heading);
+      font-size: 13px;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+
+    .btn:hover {
+      background: #5F6368;
+    }
+
+    .counter {
+      color: #9AA0A6;
+      font-size: 13px;
+      font-family: var(--font-heading);
+      min-width: 60px;
+      text-align: center;
+    }
+
+    /* Inline Code */
+    code {
+      font-family: var(--font-code);
+      background: #ECEFF1;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #202124;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="deck-container" id="presentation">
+
+    <!-- SLIDE 1: TITLE SLIDE -->
+    <div class="slide title-slide active" data-slide="1">
+      <div>
+        <span class="slide-tag">Google Cloud Spanner Graph + S2 Geometry</span>
+        <h1>Geospatial Graph Search<br>at Planetary Scale</h1>
+        <p>Sub-millisecond proximity queries combining Spanner Property Graph (GQL) and S2 multi-level spatial indexing.</p>
+        <div class="meta-pill">
+          <span>Architecture & Technical Trade-Offs</span>
+          <span>•</span>
+          <span>100K+ Entities</span>
+          <span>•</span>
+          <span>Wilmington Proximity Search</span>
+        </div>
+      </div>
+      <div class="slide-footer">
+        <span>Cloud Spanner Graph Architecture</span>
+        <span>Slide 1 of 6</span>
+      </div>
+    </div>
+
+    <!-- SLIDE 2: BACKGROUND ON S2 -->
+    <div class="slide" data-slide="2">
+      <div class="slide-header">
+        <span class="slide-tag">Foundation</span>
+        <h2 class="slide-title">What is S2 Geometry?</h2>
+        <p class="slide-subtitle">Google's open-source spherical indexing system used in Maps, BigQuery, and Spanner.</p>
+      </div>
+      <div class="slide-body">
+        <div class="card">
+          <h3 class="card-title">1. The Problem with 2D Coordinates</h3>
+          <ul class="card-list">
+            <li>Standard lat/lng $(x, y)$ coordinates are continuous, 2D spherical floats.</li>
+            <li>Distributed databases cannot natively index 2D points using standard B-Trees without expensive 2D spatial engine plugins.</li>
+            <li>Searching nearby locations without an index requires a <strong>full table scan</strong> of all rows across all splits.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3 class="card-title">2. The S2 Solution</h3>
+          <ul class="card-list">
+            <li><strong>Cube Face Quad-Tree:</strong> Projects Earth's sphere onto 6 cube faces and recursively subdivides them up to 30 levels.</li>
+            <li><strong>1D Hilbert Curve:</strong> Maps 2D cells onto a 1-dimensional 64-bit integer (<code>S2CellId</code>).</li>
+            <li><strong>Spatial Locality:</strong> Points near each other on Earth map to contiguous 1D integers, allowing <strong>standard Spanner B-Tree secondary indexes</strong> to execute spatial searches.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="slide-footer">
+        <span>S2 Geometry Architecture</span>
+        <span>Slide 2 of 6</span>
+      </div>
+    </div>
+
+    <!-- SLIDE 3: HOW IT WORKS IN 3 STEPS -->
+    <div class="slide" data-slide="3">
+      <div class="slide-header">
+        <span class="slide-tag">Execution Flow</span>
+        <h2 class="slide-title">How the Query Executes in 3 Steps</h2>
+        <p class="slide-subtitle">From customer coordinates to top-10 closest entities via Spanner Graph.</p>
+      </div>
+      <div class="slide-body">
+        <div class="card">
+          <h3 class="card-title">Step 1: Cell Resolution</h3>
+          <ul class="card-list">
+            <li>Customer input: <code>(39.7459, -75.5466)</code>.</li>
+            <li>Client calculates the parent S2 cell at <strong>Level 8</strong> (~50 km metro radius).</li>
+            <li>Produces token <code>'89c6f'</code> (signed INT64 <code>-8518857762334048256</code>).</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3 class="card-title">Step 2: Spanner Index Seek</h3>
+          <ul class="card-list">
+            <li>Hits secondary index <code>IndexLocationS2TokensByToken</code> on table <code>LocationS2Tokens</code>.</li>
+            <li>Performs an exact point lookup for <code>S2Token = @s2_token</code>.</li>
+            <li><strong>Instantly prunes 100K+ rows</strong> down to only ~50 candidate location IDs.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3 class="card-title">Step 3: Graph + Ranking</h3>
+          <ul class="card-list">
+            <li>Traverses <code>LEIGraph</code> via <code>GRAPH_TABLE</code>: <code>(Entity)-[HAS_LOCATION]->(Location)</code>.</li>
+            <li>Enriches entities with legal names and status.</li>
+            <li>Evaluates exact Haversine distance on candidates and returns <code>LIMIT 10</code>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="slide-footer">
+        <span>Query Execution Lifecycle</span>
+        <span>Slide 3 of 6</span>
+      </div>
+    </div>
+
+    <!-- SLIDE 4: PROS -->
+    <div class="slide" data-slide="4">
+      <div class="slide-header">
+        <span class="slide-tag">Strengths</span>
+        <h2 class="slide-title">Pros of the S2 + Spanner Graph Approach</h2>
+        <p class="slide-subtitle">Key architectural advantages for enterprise-scale entity graphs.</p>
+      </div>
+      <div class="slide-body">
+        <div class="card pro">
+          <h3 class="card-title">High Performance & Scalability</h3>
+          <ul class="card-list">
+            <li><strong>Sub-Millisecond Candidate Pruning:</strong> B-Tree point index seek replaces $O(N)$ full table scans with $O(\log N)$ seeks.</li>
+            <li><strong>Native Spanner Compatibility:</strong> Runs on standard Spanner tables and secondary indexes without requiring specialized GIS extensions.</li>
+            <li><strong>Seamless Graph Integration:</strong> Spanner <code>GRAPH_TABLE</code> combines spatial indexes with multi-hop graph relationship traversals in a single query.</li>
+          </ul>
+        </div>
+        <div class="card pro">
+          <h3 class="card-title">Flexibility & Efficiency</h3>
+          <ul class="card-list">
+            <li><strong>Multi-Resolution Hierarchy:</strong> Query radius can be adjusted on the fly simply by changing S2 levels (Level 6 = ~200 km, Level 8 = ~50 km, Level 10 = ~12 km).</li>
+            <li><strong>Minimal CPU & Memory Footprint:</strong> Costly Haversine trigonometric functions are evaluated on dozens of candidate rows rather than hundreds of thousands.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="slide-footer">
+        <span>Architecture Evaluation: Pros</span>
+        <span>Slide 4 of 6</span>
+      </div>
+    </div>
+
+    <!-- SLIDE 5: CONS & TRADEOFFS -->
+    <div class="slide" data-slide="5">
+      <div class="slide-header">
+        <span class="slide-tag">Trade-Offs</span>
+        <h2 class="slide-title">Cons & Considerations</h2>
+        <p class="slide-subtitle">Inherent trade-offs of discrete spatial partitioning and mitigation strategies.</p>
+      </div>
+      <div class="slide-body">
+        <div class="card con">
+          <h3 class="card-title">Edge Cases & Ingestion Overhead</h3>
+          <ul class="card-list">
+            <li><strong>Boundary / Edge Effect:</strong> If a customer coordinate lies near a cell border, a closer entity across the border in an adjacent cell could be missed if querying only 1 token.</li>
+            <li><strong>Storage Amplification:</strong> Indexing multiple S2 levels per address (e.g. 6, 8, 10, 12, 14) multiplies index row count in <code>LocationS2Tokens</code>.</li>
+            <li><strong>Client / Ingestion Dependency:</strong> Ingestion pipelines must compute S2 cell IDs prior to insertion into Spanner.</li>
+          </ul>
+        </div>
+        <div class="card con">
+          <h3 class="card-title">Mitigations & Best Practices</h3>
+          <ul class="card-list">
+            <li><strong>9-Cell Neighbor Expansion:</strong> For border-critical applications, query the center S2 token plus its 8 adjacent neighbors (<code>t.S2Token IN (...)</code>).</li>
+            <li><strong>Curated Level Selection:</strong> Store only 3–4 practical levels (e.g. Levels 6, 8, 10) instead of all 30 levels to balance storage vs. precision.</li>
+            <li><strong>Hybrid Search:</strong> Combine with Spanner Full-Text Search (<code>SEARCH_SUBSTRING</code>, <code>SEARCH_NGRAMS</code>) for comprehensive filtering.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="slide-footer">
+        <span>Architecture Evaluation: Cons & Mitigations</span>
+        <span>Slide 5 of 6</span>
+      </div>
+    </div>
+
+    <!-- SLIDE 6: SUMMARY & RECOMMENDATION -->
+    <div class="slide" data-slide="6">
+      <div class="slide-header">
+        <span class="slide-tag">Conclusion</span>
+        <h2 class="slide-title">Summary & Recommendation</h2>
+        <p class="slide-subtitle">When and how to deploy S2 indexing on Cloud Spanner Graph.</p>
+      </div>
+      <div class="slide-body">
+        <div class="card">
+          <h3 class="card-title">When to Use</h3>
+          <ul class="card-list">
+            <li>Global entity datasets (LEI, corporate hierarchies, supply chains, banking networks).</li>
+            <li>High-QPS proximity search combined with ownership and relationship graph queries.</li>
+            <li>Horizontally scalable environments where traditional GIS plugins introduce scaling bottlenecks.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3 class="card-title">Recommended Production Configuration</h3>
+          <ul class="card-list">
+            <li><strong>Primary Spatial Index:</strong> Level 8 (~50 km) for metro search, Level 10 (~12 km) for city search.</li>
+            <li><strong>Secondary Text Index:</strong> Tokenlist search index on legal name (<code>name_FullText</code>, <code>name_Tokens</code>).</li>
+            <li><strong>Graph Engine:</strong> Spanner Property Graph (<code>LEIGraph</code>) with <code>GRAPH_TABLE</code> for unified declarative querying.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="slide-footer">
+        <span>Key Takeaways</span>
+        <span>Slide 6 of 6</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Navigation Controls -->
+  <div class="controls">
+    <button class="btn" id="prevBtn" onclick="changeSlide(-1)">◀ Previous</button>
+    <span class="counter" id="slideCounter">1 / 6</span>
+    <button class="btn" id="nextBtn" onclick="changeSlide(1)">Next ▶</button>
+  </div>
+
+  <script>
+    let currentSlide = 1;
+    const totalSlides = 6;
+
+    function showSlide(n) {
+      if (n > totalSlides) currentSlide = 1;
+      if (n < 1) currentSlide = totalSlides;
+
+      document.querySelectorAll('.slide').forEach(slide => {
+        slide.classList.remove('active');
+      });
+
+      const activeSlide = document.querySelector(`.slide[data-slide="${currentSlide}"]`);
+      if (activeSlide) activeSlide.classList.add('active');
+
+      document.getElementById('slideCounter').textContent = `${currentSlide} / ${totalSlides}`;
+    }
+
+    function changeSlide(direction) {
+      currentSlide += direction;
+      showSlide(currentSlide);
+    }
+
+    // Keyboard navigation (Left/Right arrows, Space)
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ') {
+        changeSlide(1);
+      } else if (e.key === 'ArrowLeft') {
+        changeSlide(-1);
+      }
+    });
+  </script>
+</body>
+</html>

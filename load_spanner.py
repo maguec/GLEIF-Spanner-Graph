@@ -434,7 +434,7 @@ def main():
         "--use-remote-geocoder",
         action="store_true",
         default=default_remote,
-        help="Use remote Nominatim HTTP API for geocoding. Default is 100% offline calculation.",
+        help="Use remote Nominatim HTTP API for geocoding. Default is 100%% offline calculation.",
     )
     parser.add_argument(
         "--dry-run",

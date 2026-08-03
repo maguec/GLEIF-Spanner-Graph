@@ -33,6 +33,10 @@ help:  ## Display this help
 dbcreate: ## Create Database with DDL.sql schema
 	@gcloud spanner databases create $(GOOGLE_SPANNER_DATABASE) --instance $(GOOGLE_SPANNER_INSTANCE) --ddl-file=DDL.sql
 
+dbdestroy: ## DANGER: Drops the database - do not use if you are not 100% sure
+	@gcloud spanner databases  delete  $(GOOGLE_SPANNER_DATABASE) --instance $(GOOGLE_CLOUD_SPANNER_INSTANCE)
+
+
 dbschema: ## Apply or update database schema from DDL.sql
 	@gcloud spanner databases ddl update $(GOOGLE_SPANNER_DATABASE) --instance $(GOOGLE_SPANNER_INSTANCE) --ddl-file=DDL.sql
 
