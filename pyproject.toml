@@ -1,0 +1,12 @@
+[project]
+name = "spanner-s2-loader"
+version = "0.1.0"
+description = "Load LEI data into Google Cloud Spanner with S2 geo-spatial indexing and Graph relationships"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-cloud-spanner>=3.0.0",
+    "s2sphere>=0.2.5",
+    "geopy>=2.4.0",
+    "python-dotenv>=1.0.0",
+]

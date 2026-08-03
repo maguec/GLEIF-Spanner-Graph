@@ -1,0 +1,72 @@
+# Cloud Spanner S2 Geo-Spatial & Graph Database Data Loader
+
+This repository provides a complete solution for loading Legal Entity Identifier (LEI) data from [`data/1000.json`](file://data/1000.json) into Google Cloud Spanner using **S2 Geometry multi-level spatial indexing** and **Spanner Property Graph (GQL)**.
+
+The spatial indexing follows the flexible multi-level S2 approach described in:
+[*Geo-Spatial Indexing on Google Cloud Spanner with S2*](https://medium.com/google-cloud/geo-spatial-indexing-on-google-cloud-spanner-with-s2-81a013d772c4).
+
+---
+
+## Workspace Files
+
+- [`DDL.sql`](file://DDL.sql): Single SQL schema file defining all relational tables, S2 token tables, secondary indexes, and the `LEIGraph` Property Graph schema.
+- [`load_spanner.py`](file://load_spanner.py): Python loader script managed by `uv`. Parses LEI records, geocodes addresses, generates S2 leaf cell IDs and multi-level tokens, populates node & edge tables, and batches uploads into Spanner.
+- [`Makefile`](file://Makefile): Automation workflow for creating Spanner instances, initializing databases with DDL, updating schemas, and loading data.
+- [`pyproject.toml`](file://pyproject.toml): Project dependencies for `uv`.
+- [`.env.example`](file://.env.example): Environment variable template.
+
+---
+
+## Schema Architecture: Spanner Property Graph + S2 Indexing
+
+### 1. Node Tables
+- **`Entities`**: Represents legal entity nodes.
+  - Primary Key: `LEI`
+  - Attributes: LegalName, LegalJurisdiction, EntityCategory, EntityStatus, Dates, etc.
+- **`EntityLocations`**: Represents geographic location nodes.
+  - Primary Key: `LocationId` (`"{LEI}:{AddressType}"`)
+  - Attributes: Address fields, City, Region, Country, Latitude, Longitude, `S2CellId`, `S2TokenStr`.
+
+### 2. Edge / Relationship Table
+- **`EntityHasLocation`**: Relationship table linking Entities to Locations.
+  - Primary Key: `(LEI, LocationId)`
+  - Foreign Keys: `LEI` -> `Entities(LEI)`, `LocationId` -> `EntityLocations(LocationId)`
+  - Attributes: `RelationshipType` (`'HAS_LEGAL_ADDRESS'`, `'HAS_HEADQUARTERS_ADDRESS'`), `CreatedAt`.
+
+### 3. Multi-Level S2 Token Table
+- **`LocationS2Tokens`**: Interleaved child table under `EntityLocations` for flexible multi-level S2 cell indexing.
+  - Primary Key: `(LocationId, S2Level, S2Token)`
+  - Interleaved in `EntityLocations` ON DELETE CASCADE.
+  - Stores cell tokens across hierarchy levels (e.g., levels 6, 8, 10, 12, 14, 16, 18, 20) for variable-radius spatial range queries.
+
+### 4. Property Graph Definition
+```sql
+CREATE PROPERTY GRAPH LEIGraph
+  NODE TABLES (
+    Entities KEY (LEI) LABEL Entity ...,
+    EntityLocations KEY (LocationId) LABEL Location ...
+  )
+  EDGE TABLES (
+    EntityHasLocation
+      KEY (LEI, LocationId)
+      SOURCE KEY (LEI) REFERENCES Entities (LEI)
+      DESTINATION KEY (LocationId) REFERENCES EntityLocations (LocationId)
+      LABEL HAS_LOCATION ...
+  );
+```
+
+---
+
+## Management via Makefile
+
+Set up your `.env` file first:
+```bash
+cp .env.example .env
+```
+
+### Key Targets:
+- `make dbcreate`: Creates the Spanner database and applies [`DDL.sql`](file://DDL.sql) schema.
+- `make dbschema`: Updates the database DDL from [`DDL.sql`](file://DDL.sql).
+- `make dbload-dryrun`: Runs [`load_spanner.py`](file://load_spanner.py) in dry-run mode to verify parsing, geocoding, and S2 generation.
+- `make dbload`: Uploads graph nodes, edges, and S2 tokens into Cloud Spanner.
+- `make instancecreate`: Creates a Cloud Spanner instance.
