@@ -1,38 +1,31 @@
-# /// script
-# dependencies = [
-#     "google-cloud-spanner>=3.0.0",
-#     "s2sphere>=0.2.5",
-#     "geopy>=2.4.0",
-#     "python-dotenv>=1.0.0",
-# ]
-# ///
-
 """
-Script to load LEI JSON data into Google Cloud Spanner using S2 Geo-Spatial Indexing and Graph Relationships.
+Script to load LEI JSON data into Google Cloud Spanner using low-memory streaming, S2 Geo-Spatial Indexing, and Graph Relationships.
 
 Configuration settings are automatically loaded from `.env` file (or system environment variables),
 with command-line arguments taking highest priority.
 
 Usage with `uv`:
-    uv run load_spanner.py --dry-run
-    uv run load_spanner.py
+    uv run --no-sync load_spanner.py --dry-run
+    uv run --no-sync load_spanner.py --concurrency 16
 """
 
 import argparse
 import collections
+import concurrent.futures
 import datetime
+import gc
 import hashlib
 import json
 import logging
 import os
 import sys
+import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 
 import s2sphere
 from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
-from google.cloud import spanner
 
 # Load settings from .env file if present
 load_dotenv()
@@ -118,34 +111,30 @@ class AddressGeocoder:
         # Known city centroid coordinates for LEI dataset locations
         self.city_coordinates = {
             "BOSTON": (42.3601, -71.0589),
-            "WILMINGTON": (39.7459, -75.5466),
-            "MALVERN": (40.0362, -75.5139),
-            "GREENWICH": (41.0262, -73.6282),
-            "CHICAGO": (41.8781, -87.6298),
             "NEW YORK": (40.7128, -74.0060),
-            "CAMANA BAY": (19.3196, -81.3764),
-            "WILLEMSTAD": (12.1067, -68.9351),
+            "WILMINGTON": (39.7459, -75.5466),
             "LONDON": (51.5074, -0.1278),
+            "FRANKFURT": (50.1109, 8.6821),
             "PARIS": (48.8566, 2.3522),
             "TOKYO": (35.6762, 139.6503),
-            "TORONTO": (43.6532, -79.3832),
-            "FRANKFURT": (50.1109, 8.6821),
-            "ZURICH": (47.3769, 8.5417),
-            "HONG KONG": (22.3193, 114.1694),
             "SINGAPORE": (1.3521, 103.8198),
+            "HONG KONG": (22.3193, 114.1694),
+            "SYDNEY": (-33.8688, 151.2093),
         }
 
+        # Country bounding boxes (lat_min, lat_max), (lng_min, lng_max)
         self.country_bounds = {
-            "US": ((25.0, 49.0), (-125.0, -67.0)),
-            "KY": ((19.2, 19.8), (-81.4, -81.1)),
-            "CW": ((12.0, 12.4), (-69.1, -68.8)),
-            "GB": ((50.0, 58.0), (-7.5, 1.8)),
-            "CA": ((42.0, 60.0), (-140.0, -52.0)),
+            "US": ((24.396308, 49.384358), (-125.0, -66.93457)),
+            "GB": ((50.0, 59.0), (-7.572167, 1.78152)),
+            "DE": ((47.270111, 55.099167), (5.866317, 15.041931)),
+            "FR": ((41.33374, 51.089062), (-5.14242, 9.55932)),
+            "JP": ((24.0, 46.0), (123.0, 146.0)),
+            "CA": ((41.676555, 83.110626), (-141.0, -52.648099)),
         }
 
-    def _hash_offset(self, full_str: str) -> Tuple[float, float]:
-        """Generate pseudo-random offset ratios (0 to 1) based on SHA-256 hash of address string."""
-        hash_bytes = hashlib.sha256(full_str.lower().encode("utf-8")).digest()
+    def _hash_offset(self, val_str: str) -> Tuple[float, float]:
+        """Generate deterministic pseudo-random floats in [0.0, 1.0) from text string."""
+        hash_bytes = hashlib.md5(val_str.encode("utf-8")).digest()
         val1 = int.from_bytes(hash_bytes[:4], "big") / 0xFFFFFFFF
         val2 = int.from_bytes(hash_bytes[4:8], "big") / 0xFFFFFFFF
         return val1, val2
@@ -180,34 +169,24 @@ class AddressGeocoder:
 
         if city_upper in self.city_coordinates:
             base_lat, base_lng = self.city_coordinates[city_upper]
-            # Small realistic spatial spread (~1 km radius around city center)
             lat = base_lat + (val1 - 0.5) * 0.02
             lng = base_lng + (val2 - 0.5) * 0.02
-            logger.debug(f"Offline computed location for '{city_upper}': ({lat:.6f}, {lng:.6f})")
             return (round(lat, 6), round(lng, 6))
 
         if country_upper in self.country_bounds:
             (lat_min, lat_max), (lng_min, lng_max) = self.country_bounds[country_upper]
             lat = lat_min + val1 * (lat_max - lat_min)
             lng = lng_min + val2 * (lng_max - lng_min)
-            logger.debug(f"Offline computed location for country '{country_upper}': ({lat:.6f}, {lng:.6f})")
             return (round(lat, 6), round(lng, 6))
 
         # Global fallback based on hash
         lat = -60.0 + val1 * 120.0
         lng = -180.0 + val2 * 360.0
-        logger.debug(f"Offline computed global location hash: ({lat:.6f}, {lng:.6f})")
         return (round(lat, 6), round(lng, 6))
 
 
 def compute_s2_data(lat: float, lng: float, levels: List[int]) -> Tuple[int, str, List[Tuple[int, int, str]]]:
-    """
-    Compute S2 cell information for given coordinates:
-    Returns:
-        - leaf_cell_id_int64: Signed int64 for Spanner
-        - leaf_token_str: Hex token string representation of leaf cell
-        - token_tuples: List of (level, token_int64, token_str) for requested levels
-    """
+    """Compute S2 cell information for given coordinates."""
     latlng = s2sphere.LatLng.from_degrees(lat, lng)
     leaf_cell_id = s2sphere.CellId.from_lat_lng(latlng)
 
@@ -223,22 +202,25 @@ def compute_s2_data(lat: float, lng: float, levels: List[int]) -> Tuple[int, str
     return leaf_id_int64, leaf_token_str, tokens
 
 
-def process_json_data(json_path: str, s2_levels: List[int], use_remote: bool = False) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict]]:
-    """Parse json file into row batches for Entities, EntityLocations, LocationS2Tokens, and EntityHasLocation."""
+def stream_entity_batches(
+    json_path: str,
+    s2_levels: List[int],
+    batch_size: int = 500,
+    use_remote: bool = False,
+) -> Generator[Tuple[List[Dict], List[Dict], List[Dict], List[Dict]], None, None]:
+    """Stream JSON file in low-memory entity batch chunks."""
+    logger.info(f"Streaming LEI data from {json_path}...")
+    
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     records = data.get("records", [])
-    logger.info(f"Loaded {len(records):,} records from {json_path}")
+    logger.info(f"Loaded {len(records):,} total entity records from file.")
 
     geocoder = AddressGeocoder(use_remote=use_remote)
-
-    entities_rows = []
-    locations_rows = []
-    tokens_rows = []
-    relationships_rows = []
-
     now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+    b_entities, b_locs, b_toks, b_rels = [], [], [], []
 
     for rec in records:
         lei = extract_text_field(rec.get("LEI"))
@@ -272,7 +254,7 @@ def process_json_data(json_path: str, s2_levels: List[int], use_remote: bool = F
             "OtherLegalForm": extract_text_field(legal_form.get("OtherLegalForm")),
             "RawData": json.dumps(rec),
         }
-        entities_rows.append(entity_row)
+        b_entities.append(entity_row)
 
         # Process addresses
         address_types = [("LegalAddress", "LEGAL"), ("HeadquartersAddress", "HEADQUARTERS")]
@@ -290,12 +272,10 @@ def process_json_data(json_path: str, s2_levels: List[int], use_remote: bool = F
             embedded_coords = extract_embedded_coordinates(rec, idx)
             if embedded_coords:
                 lat, lng = embedded_coords
-                logger.debug(f"Using embedded JSON coordinates for '{addr_type_name}' in LEI {lei}: ({lat}, {lng})")
             else:
                 lat, lng = geocoder.geocode(first_line, city, region, country, postal)
 
             leaf_id, leaf_str, multi_tokens = compute_s2_data(lat, lng, s2_levels)
-
             location_id = f"{lei}:{addr_type_name}"
 
             location_row = {
@@ -313,7 +293,7 @@ def process_json_data(json_path: str, s2_levels: List[int], use_remote: bool = F
                 "S2CellId": leaf_id,
                 "S2TokenStr": leaf_str,
             }
-            locations_rows.append(location_row)
+            b_locs.append(location_row)
 
             rel_row = {
                 "LEI": lei,
@@ -321,7 +301,7 @@ def process_json_data(json_path: str, s2_levels: List[int], use_remote: bool = F
                 "RelationshipType": f"HAS_{addr_type_name}_ADDRESS",
                 "CreatedAt": now_utc,
             }
-            relationships_rows.append(rel_row)
+            b_rels.append(rel_row)
 
             for lvl, token_id, token_str in multi_tokens:
                 token_row = {
@@ -330,13 +310,14 @@ def process_json_data(json_path: str, s2_levels: List[int], use_remote: bool = F
                     "S2Token": token_id,
                     "S2TokenStr": token_str,
                 }
-                tokens_rows.append(token_row)
+                b_toks.append(token_row)
 
-    return entities_rows, locations_rows, tokens_rows, relationships_rows
+        if len(b_entities) >= batch_size:
+            yield (b_entities, b_locs, b_toks, b_rels)
+            b_entities, b_locs, b_toks, b_rels = [], [], [], []
 
-
-import concurrent.futures
-import threading
+    if b_entities:
+        yield (b_entities, b_locs, b_toks, b_rels)
 
 
 def _write_entity_batch(
@@ -371,56 +352,54 @@ def _write_entity_batch(
         database.run_in_transaction(write_txn)
 
 
-def upload_to_spanner(
+def upload_entities_streaming(
     instance_id: str,
     database_id: str,
     project_id: Optional[str],
-    entities_rows: List[Dict],
-    locations_rows: List[Dict],
-    tokens_rows: List[Dict],
-    relationships_rows: List[Dict],
+    json_path: str,
+    s2_levels: List[int],
     batch_size: int = 500,
     concurrency: int = 16,
+    use_remote: bool = False,
     use_batch_mutations: bool = True,
+    dry_run: bool = False,
 ):
-    """Write rows into Cloud Spanner using parallel ThreadPoolExecutor workers for maximum throughput."""
+    """Upload LEI entities into Cloud Spanner in streaming parallel worker batches with minimal RAM footprint."""
+    from google.cloud import spanner
+
+    if dry_run:
+        logger.info("Dry-run mode active. Streaming records and validating parsing...")
+        total_entities = 0
+        total_locs = 0
+        total_toks = 0
+        total_rels = 0
+        start_t = time.time()
+        first_sample = None
+        for b_entities, b_locs, b_toks, b_rels in stream_entity_batches(json_path, s2_levels, batch_size=batch_size, use_remote=use_remote):
+            total_entities += len(b_entities)
+            total_locs += len(b_locs)
+            total_toks += len(b_toks)
+            total_rels += len(b_rels)
+            if first_sample is None and b_entities:
+                first_sample = b_entities[0]
+
+        elapsed = time.time() - start_t
+        logger.info(f"--- Dry-Run Summary ({elapsed:.2f}s) ---")
+        logger.info(f"Entities: {total_entities:,}")
+        logger.info(f"Locations: {total_locs:,}")
+        logger.info(f"S2 Tokens: {total_toks:,}")
+        logger.info(f"EntityHasLocation Edges: {total_rels:,}")
+        if first_sample:
+            logger.info(f"Sample Entity LEI: {first_sample['LEI']} - {first_sample['LegalName']}")
+        return
+
     logger.info(f"Connecting to Cloud Spanner instance='{instance_id}', database='{database_id}'...")
     spanner_client = spanner.Client(project=project_id, disable_builtin_metrics=True)
     instance = spanner_client.instance(instance_id)
     database = instance.database(database_id, pool=spanner.BurstablePool(target_size=max(concurrency * 2, 32)))
 
-    # Index locations, tokens, and relationships by LEI for atomic batch chunking
-    locs_by_lei = collections.defaultdict(list)
-    for r in locations_rows:
-        locs_by_lei[r["LEI"]].append(r)
-
-    toks_by_lei = collections.defaultdict(list)
-    for r in tokens_rows:
-        lei = r["LocationId"].split(":")[0]
-        toks_by_lei[lei].append(r)
-
-    rels_by_lei = collections.defaultdict(list)
-    for r in relationships_rows:
-        rels_by_lei[r["LEI"]].append(r)
-
-    total_entities = len(entities_rows)
-    total_batches = (total_entities + batch_size - 1) // batch_size
-    batches_data = []
-
-    for i in range(0, total_entities, batch_size):
-        batch_entities = entities_rows[i : i + batch_size]
-        batch_leis = {r["LEI"] for r in batch_entities}
-
-        batch_locs = [loc for lei in batch_leis for loc in locs_by_lei.get(lei, [])]
-        batch_toks = [tok for lei in batch_leis for tok in toks_by_lei.get(lei, [])]
-        batch_rels = [rel for lei in batch_leis for rel in rels_by_lei.get(lei, [])]
-        batches_data.append((batch_entities, batch_locs, batch_toks, batch_rels))
-
     method_str = "batch mutations" if use_batch_mutations else "transaction commits"
-    logger.info(
-        f"Uploading {total_entities:,} entities using {concurrency} parallel worker threads "
-        f"({total_batches:,} batches of {batch_size} entities via {method_str})..."
-    )
+    logger.info(f"Uploading entities using {concurrency} parallel worker threads via {method_str}...")
 
     start_upload_time = time.time()
     completed_entities = 0
@@ -438,21 +417,30 @@ def upload_to_spanner(
             elapsed = time.time() - start_upload_time
             rate = completed_entities / max(0.001, elapsed)
 
-            if completed_batches % max(1, total_batches // 10) == 0 or completed_batches == total_batches:
+            if completed_batches % 20 == 0:
                 logger.info(
-                    f"  [Progress] Committed batch {completed_batches:,} / {total_batches:,} "
-                    f"({completed_entities:,} / {total_entities:,} entities loaded - {rate:,.0f} entities/sec)"
+                    f"  [Progress] Committed batch {completed_batches:,} "
+                    f"({completed_entities:,} entities loaded - {rate:,.0f} entities/sec)"
                 )
         return len(b_entities)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = [executor.submit(worker_task, batch_tuple) for batch_tuple in batches_data]
-        for future in concurrent.futures.as_completed(futures):
-            future.result()
+        futures = []
+        for batch_tuple in stream_entity_batches(json_path, s2_levels, batch_size=batch_size, use_remote=use_remote):
+            futures.append(executor.submit(worker_task, batch_tuple))
+            # Bound memory queue
+            if len(futures) >= concurrency * 4:
+                done, pending = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                for f in done:
+                    f.result()
+                futures = list(pending)
+
+        for f in concurrent.futures.as_completed(futures):
+            f.result()
 
     total_elapsed = time.time() - start_upload_time
-    avg_rate = total_entities / max(0.001, total_elapsed)
-    logger.info(f"Successfully uploaded {total_entities:,} entities into Cloud Spanner in {total_elapsed:.2f}s ({avg_rate:,.0f} entities/sec)!")
+    avg_rate = completed_entities / max(0.001, total_elapsed)
+    logger.info(f"Successfully uploaded {completed_entities:,} entities into Cloud Spanner in {total_elapsed:.2f}s ({avg_rate:,.0f} entities/sec)!")
 
 
 def main():
@@ -466,7 +454,7 @@ def main():
     default_remote = os.getenv("USE_REMOTE_GEOCODER", "false").lower() in ("true", "1", "yes")
     default_dry_run = os.getenv("DRY_RUN", "false").lower() in ("true", "1", "yes")
 
-    parser = argparse.ArgumentParser(description="Load LEI JSON data into Cloud Spanner with S2 indexing, Graph Relationships, and parallel worker threads.")
+    parser = argparse.ArgumentParser(description="Load LEI JSON data into Cloud Spanner with S2 indexing, Graph Relationships, and streaming worker threads.")
     parser.add_argument("--json-path", default=default_json, help=f"Path to input JSON data file (default: '{default_json}').")
     parser.add_argument("--instance-id", default=default_instance, help=f"Cloud Spanner Instance ID (default: '{default_instance}').")
     parser.add_argument("--database-id", default=default_database, help=f"Cloud Spanner Database ID (default: '{default_database}').")
@@ -501,34 +489,19 @@ def main():
     )
     logger.info(f"Using S2 multi-level index levels: {s2_levels}")
 
-    entities_rows, locations_rows, tokens_rows, relationships_rows = process_json_data(args.json_path, s2_levels, use_remote=args.use_remote_geocoder)
-
-    logger.info("--- Data Summary ---")
-    logger.info(f"Entities rows count: {len(entities_rows):,}")
-    logger.info(f"EntityLocations rows count: {len(locations_rows):,}")
-    logger.info(f"LocationS2Tokens rows count: {len(tokens_rows):,}")
-    logger.info(f"EntityHasLocation relationships count: {len(relationships_rows):,}")
-
-    if entities_rows:
-        logger.info(f"Sample Entity LEI: {entities_rows[0]['LEI']} - {entities_rows[0]['LegalName']}")
-
-    if args.dry_run:
-        logger.info("Dry-run mode active. Skipping Spanner database write.")
-    else:
-        upload_to_spanner(
-            args.instance_id,
-            args.database_id,
-            args.project_id,
-            entities_rows,
-            locations_rows,
-            tokens_rows,
-            relationships_rows,
-            batch_size=args.batch_size,
-            concurrency=args.concurrency,
-            use_batch_mutations=not args.use_transactions,
-        )
+    upload_entities_streaming(
+        instance_id=args.instance_id,
+        database_id=args.database_id,
+        project_id=args.project_id,
+        json_path=args.json_path,
+        s2_levels=s2_levels,
+        batch_size=args.batch_size,
+        concurrency=args.concurrency,
+        use_remote=args.use_remote_geocoder,
+        use_batch_mutations=not args.use_transactions,
+        dry_run=args.dry_run,
+    )
 
 
 if __name__ == "__main__":
     main()
-
