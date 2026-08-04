@@ -66,6 +66,11 @@ def safe_dict_get(obj: Any, *keys: str) -> Any:
     return curr
 
 
+def truncate_str(val: Optional[str], max_len: int) -> Optional[str]:
+    """Truncate string value defensively if it exceeds column max_len bounds."""
+    return val[:max_len] if isinstance(val, str) else val
+
+
 def extract_text_field(obj: Any) -> Optional[str]:
     """Extract string value from LEI JSON dict wrapper {"$": "value"}."""
     if isinstance(obj, dict):
@@ -265,22 +270,22 @@ def stream_entity_batches(
             continue
 
         entity_row = {
-            "LEI": lei,
+            "LEI": lei[:20],
             "LegalName": extract_text_field(safe_dict_get(rec, "Entity", "LegalName")),
-            "LegalJurisdiction": extract_text_field(safe_dict_get(rec, "Entity", "LegalJurisdiction")),
-            "EntityCategory": extract_text_field(safe_dict_get(rec, "Entity", "EntityCategory")),
-            "EntityStatus": extract_text_field(safe_dict_get(rec, "Entity", "EntityStatus")),
+            "LegalJurisdiction": truncate_str(extract_text_field(safe_dict_get(rec, "Entity", "LegalJurisdiction")), 100),
+            "EntityCategory": truncate_str(extract_text_field(safe_dict_get(rec, "Entity", "EntityCategory")), 100),
+            "EntityStatus": truncate_str(extract_text_field(safe_dict_get(rec, "Entity", "EntityStatus")), 50),
             "EntityCreationDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Entity", "EntityCreationDate"))),
             "InitialRegistrationDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "InitialRegistrationDate"))),
             "LastUpdateDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "LastUpdateDate"))),
-            "RegistrationStatus": extract_text_field(safe_dict_get(rec, "Registration", "RegistrationStatus")),
+            "RegistrationStatus": truncate_str(extract_text_field(safe_dict_get(rec, "Registration", "RegistrationStatus")), 50),
             "NextRenewalDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "NextRenewalDate"))),
-            "ManagingLOU": extract_text_field(safe_dict_get(rec, "Registration", "ManagingLOU")),
-            "ValidationSources": extract_text_field(safe_dict_get(rec, "Registration", "ValidationSources")),
-            "ValidationAuthorityID": extract_text_field(safe_dict_get(rec, "Registration", "ValidationAuthority", "ValidationAuthorityID")),
-            "ValidationAuthorityEntityID": extract_text_field(safe_dict_get(rec, "Registration", "ValidationAuthority", "ValidationAuthorityEntityID")),
-            "ConformityFlag": extract_text_field(safe_dict_get(rec, "Extension", "gleif:conformity", "gleif:conformityflag")),
-            "EntityLegalFormCode": extract_text_field(safe_dict_get(rec, "Entity", "LegalForm", "EntityLegalFormCode")),
+            "ManagingLOU": truncate_str(extract_text_field(safe_dict_get(rec, "Registration", "ManagingLOU")), 100),
+            "ValidationSources": truncate_str(extract_text_field(safe_dict_get(rec, "Registration", "ValidationSources")), 255),
+            "ValidationAuthorityID": truncate_str(extract_text_field(safe_dict_get(rec, "Registration", "ValidationAuthority", "ValidationAuthorityID")), 100),
+            "ValidationAuthorityEntityID": truncate_str(extract_text_field(safe_dict_get(rec, "Registration", "ValidationAuthority", "ValidationAuthorityEntityID")), 255),
+            "ConformityFlag": truncate_str(extract_text_field(safe_dict_get(rec, "Extension", "gleif:conformity", "gleif:conformityflag")), 50),
+            "EntityLegalFormCode": truncate_str(extract_text_field(safe_dict_get(rec, "Entity", "LegalForm", "EntityLegalFormCode")), 100),
             "OtherLegalForm": extract_text_field(safe_dict_get(rec, "Entity", "LegalForm", "OtherLegalForm")),
             "RawData": json.dumps(rec),
         }
