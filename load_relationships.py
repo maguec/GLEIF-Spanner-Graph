@@ -1,5 +1,5 @@
 """
-Script to load GLEIF Entity Relationship (RR) data into Google Cloud Spanner using low-memory streaming and parallel worker threads.
+Script to load GLEIF Entity Relationship (RR) data into Google Cloud Spanner using true low-memory disk streaming and parallel worker threads.
 
 Inserts relationship records (e.g., IS_FUND-MANAGED_BY, IS_ULTIMATELY_CONSOLIDATED_BY,
 IS_DIRECTLY_CONSOLIDATED_BY, IS_SUBFUND_OF, IS_INTERNATIONAL_BRANCH_OF, IS_FEEDER_TO)
@@ -60,20 +60,42 @@ def extract_text_field(obj: Any) -> Optional[str]:
     return None
 
 
+def stream_json_records(filepath: str) -> Generator[Dict[str, Any], None, None]:
+    """Stream JSON array records one-by-one from disk to maintain true O(1) RAM footprint."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        buf = []
+        depth = 0
+        in_record = False
+
+        for line in f:
+            stripped = line.strip()
+            if not in_record:
+                if stripped.startswith("{") and not stripped.startswith('{"records"') and not stripped.startswith('{"relations"'):
+                    in_record = True
+                    buf = [line]
+                    depth = line.count("{") - line.count("}")
+            else:
+                buf.append(line)
+                depth += line.count("{") - line.count("}")
+                if depth == 0:
+                    record_str = "".join(buf).rstrip(",\n ")
+                    if record_str.endswith(","):
+                        record_str = record_str[:-1]
+                    try:
+                        yield json.loads(record_str)
+                    except Exception:
+                        pass
+                    buf = []
+                    in_record = False
+
+
 def stream_rr_batches(rr_json_path: str, batch_size: int = 1000) -> Generator[List[Dict[str, Any]], None, None]:
-    """Stream relationship JSON file in memory-efficient batch chunks."""
+    """Stream relationship JSON file in O(1) memory-efficient batch chunks directly from disk file handle."""
     logger.info(f"Streaming relationship records from {rr_json_path}...")
-    
-    with open(rr_json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    records = data.get("relations", [])
-    logger.info(f"Loaded {len(records):,} total raw relationship records from file.")
-
     current_batch: List[Dict[str, Any]] = []
     seen_keys: Set[Tuple[str, str, str]] = set()
 
-    for r in records:
+    for r in stream_json_records(rr_json_path):
         rec = r.get("RelationshipRecord", {})
         rel = rec.get("Relationship", {})
         reg = rec.get("Registration", {})

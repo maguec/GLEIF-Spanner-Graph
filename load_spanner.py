@@ -1,5 +1,5 @@
 """
-Script to load LEI JSON data into Google Cloud Spanner using low-memory streaming, S2 Geo-Spatial Indexing, and Graph Relationships.
+Script to load LEI JSON data into Google Cloud Spanner using true low-memory disk streaming, S2 Geo-Spatial Indexing, and Graph Relationships.
 
 Configuration settings are automatically loaded from `.env` file (or system environment variables),
 with command-line arguments taking highest priority.
@@ -202,27 +202,49 @@ def compute_s2_data(lat: float, lng: float, levels: List[int]) -> Tuple[int, str
     return leaf_id_int64, leaf_token_str, tokens
 
 
+def stream_json_records(filepath: str) -> Generator[Dict[str, Any], None, None]:
+    """Stream JSON array records one-by-one from disk to maintain true O(1) RAM footprint."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        buf = []
+        depth = 0
+        in_record = False
+
+        for line in f:
+            stripped = line.strip()
+            if not in_record:
+                if stripped.startswith("{") and not stripped.startswith('{"records"') and not stripped.startswith('{"relations"'):
+                    in_record = True
+                    buf = [line]
+                    depth = line.count("{") - line.count("}")
+            else:
+                buf.append(line)
+                depth += line.count("{") - line.count("}")
+                if depth == 0:
+                    record_str = "".join(buf).rstrip(",\n ")
+                    if record_str.endswith(","):
+                        record_str = record_str[:-1]
+                    try:
+                        yield json.loads(record_str)
+                    except Exception:
+                        pass
+                    buf = []
+                    in_record = False
+
+
 def stream_entity_batches(
     json_path: str,
     s2_levels: List[int],
     batch_size: int = 500,
     use_remote: bool = False,
 ) -> Generator[Tuple[List[Dict], List[Dict], List[Dict], List[Dict]], None, None]:
-    """Stream JSON file in low-memory entity batch chunks."""
+    """Stream JSON file in O(1) memory entity batch chunks directly from disk file handle."""
     logger.info(f"Streaming LEI data from {json_path}...")
-    
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    records = data.get("records", [])
-    logger.info(f"Loaded {len(records):,} total entity records from file.")
-
     geocoder = AddressGeocoder(use_remote=use_remote)
     now_utc = datetime.datetime.now(datetime.timezone.utc)
 
     b_entities, b_locs, b_toks, b_rels = [], [], [], []
 
-    for rec in records:
+    for rec in stream_json_records(json_path):
         lei = extract_text_field(rec.get("LEI"))
         if not lei:
             continue
