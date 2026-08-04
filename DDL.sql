@@ -60,16 +60,36 @@ CREATE TABLE EntityHasLocation (
     FOREIGN KEY (LocationId) REFERENCES EntityLocations (LocationId)
 ) PRIMARY KEY (LEI, LocationId);
 
+-- Interleaved relationship table between entities (e.g. parent/subsidiary, fund manager, subfund)
+CREATE TABLE EntityRelationships (
+    StartLEI STRING(20) NOT NULL,
+    EndLEI STRING(20) NOT NULL,
+    RelationshipType STRING(50) NOT NULL,
+    RelationshipStatus STRING(50),
+    InitialRegistrationDate TIMESTAMP,
+    LastUpdateDate TIMESTAMP,
+    RegistrationStatus STRING(50),
+    NextRenewalDate TIMESTAMP,
+    ManagingLOU STRING(50),
+    ValidationSources STRING(100),
+    FOREIGN KEY (StartLEI) REFERENCES Entities (LEI),
+    FOREIGN KEY (EndLEI) REFERENCES Entities (LEI)
+) PRIMARY KEY (StartLEI, EndLEI, RelationshipType),
+  INTERLEAVE IN PARENT Entities ON DELETE CASCADE;
+
 -- Secondary index for fast range and point lookups on S2 tokens across levels
 CREATE INDEX IndexLocationS2TokensByToken ON LocationS2Tokens(S2Token, S2Level);
 
 -- Secondary index on exact location leaf cell IDs
 CREATE INDEX IndexEntityLocationsByS2CellId ON EntityLocations(S2CellId);
 
+-- Secondary index for fast reverse lookups on EndLEI (e.g. finding parent, manager, or master fund)
+CREATE INDEX IndexEntityRelationshipsByEndLEI ON EntityRelationships(EndLEI, StartLEI);
+
 -- Full-text, N-Gram, and Substring Search Index on Entity Legal Names
 CREATE SEARCH INDEX EntitiesNameSearchIndex ON Entities(name_Tokens, name_FullText, name_SubString);
 
--- Property Graph Definition incorporating Entity and Location nodes with HAS_LOCATION relationship
+-- Property Graph Definition incorporating Entity and Location nodes with HAS_LOCATION and IS_RELATED_TO relationships
 CREATE PROPERTY GRAPH LEIGraph
   NODE TABLES (
     Entities
@@ -111,5 +131,18 @@ CREATE PROPERTY GRAPH LEIGraph
       SOURCE KEY (LEI) REFERENCES Entities (LEI)
       DESTINATION KEY (LocationId) REFERENCES EntityLocations (LocationId)
       LABEL HAS_LOCATION
-      PROPERTIES (RelationshipType, CreatedAt)
+      PROPERTIES (RelationshipType, CreatedAt),
+    EntityRelationships
+      KEY (StartLEI, EndLEI, RelationshipType)
+      SOURCE KEY (StartLEI) REFERENCES Entities (LEI)
+      DESTINATION KEY (EndLEI) REFERENCES Entities (LEI)
+      LABEL IS_RELATED_TO
+      PROPERTIES (
+        RelationshipType,
+        RelationshipStatus,
+        InitialRegistrationDate,
+        LastUpdateDate,
+        RegistrationStatus,
+        ManagingLOU
+      )
   );

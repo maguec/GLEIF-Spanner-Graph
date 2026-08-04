@@ -265,3 +265,29 @@ FROM GRAPH_TABLE(
 ORDER BY g.LEI, g.AddressType
 LIMIT 20;
 ```
+
+---
+
+## Query 6: Corporate Relationship Traversal (Fund Management & Consolidation Graph)
+
+### Business Scenario
+Analyze inter-entity corporate structures by traversing relationships between entities (such as fund management relationships, ultimate consolidation parents, direct consolidation parents, and sub-funds).
+
+### How It Works
+Traverses the `IS_RELATED_TO` edge table (`EntityRelationships`) interleaved in `Entities` within `LEIGraph`, linking subject entities (`e1`) to target entities (`e2`) and filtering by relationship type.
+
+```sql
+GRAPH LEIGraph
+MATCH (e1:Entity)-[r:IS_RELATED_TO]->(e2:Entity)
+WHERE r.RelationshipType IN ('IS_FUND-MANAGED_BY', 'IS_ULTIMATELY_CONSOLIDATED_BY', 'IS_DIRECTLY_CONSOLIDATED_BY', 'IS_SUBFUND_OF')
+RETURN
+    e1.LEI AS subject_lei,
+    e1.LegalName AS subject_name,
+    e1.EntityCategory AS subject_category,
+    r.RelationshipType AS relationship_type,
+    r.RelationshipStatus AS relationship_status,
+    e2.LEI AS target_lei,
+    e2.LegalName AS target_name,
+    e2.EntityCategory AS target_category
+LIMIT 20;
+```
