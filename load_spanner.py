@@ -26,6 +26,7 @@ from typing import Any, Dict, Generator, List, Optional, Set, Tuple
 import s2sphere
 from dotenv import load_dotenv
 from geopy.geocoders import Nominatim
+from google.cloud import spanner
 
 # Load settings from .env file if present
 load_dotenv()
@@ -53,6 +54,18 @@ def parse_timestamp(iso_str: Optional[str]) -> Optional[datetime.datetime]:
         return None
 
 
+def safe_dict_get(obj: Any, *keys: str) -> Any:
+    """Safely traverse nested dictionary keys without raising AttributeError on None or non-dict types."""
+    curr = obj
+    for k in keys:
+        if not isinstance(curr, dict):
+            return None
+        curr = curr.get(k)
+        if curr is None:
+            return None
+    return curr
+
+
 def extract_text_field(obj: Any) -> Optional[str]:
     """Extract string value from LEI JSON dict wrapper {"$": "value"}."""
     if isinstance(obj, dict):
@@ -63,7 +76,10 @@ def extract_text_field(obj: Any) -> Optional[str]:
 
 
 def extract_address_lines(addr_dict: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-    """Extract FirstAddressLine and AdditionalAddressLine strings."""
+    """Extract FirstAddressLine and AdditionalAddressLine strings safely."""
+    if not isinstance(addr_dict, dict):
+        return None, None
+
     first = extract_text_field(addr_dict.get("FirstAddressLine"))
 
     add_line = addr_dict.get("AdditionalAddressLine")
@@ -78,14 +94,13 @@ def extract_address_lines(addr_dict: Dict[str, Any]) -> Tuple[Optional[str], Opt
 
 def extract_embedded_coordinates(rec: Dict[str, Any], idx: int) -> Optional[Tuple[float, float]]:
     """Extract embedded lat/lng from Extension.gleif:Geocoding if present and valid."""
-    extension = rec.get("Extension", {})
-    geocoding_list = extension.get("gleif:Geocoding", [])
+    geocoding_list = safe_dict_get(rec, "Extension", "gleif:Geocoding")
     if isinstance(geocoding_list, list) and len(geocoding_list) > idx:
         geo = geocoding_list[idx]
         if isinstance(geo, dict):
-            failed = geo.get("gleif:geocoding_failed", {}).get("$")
-            lat_str = geo.get("gleif:lat", {}).get("$")
-            lng_str = geo.get("gleif:lng", {}).get("$")
+            failed = extract_text_field(geo.get("gleif:geocoding_failed"))
+            lat_str = extract_text_field(geo.get("gleif:lat"))
+            lng_str = extract_text_field(geo.get("gleif:lng"))
             if not failed and lat_str and lng_str:
                 try:
                     lat, lng = float(lat_str), float(lng_str)
@@ -245,35 +260,28 @@ def stream_entity_batches(
     b_entities, b_locs, b_toks, b_rels = [], [], [], []
 
     for rec in stream_json_records(json_path):
-        lei = extract_text_field(rec.get("LEI"))
+        lei = extract_text_field(safe_dict_get(rec, "LEI"))
         if not lei:
             continue
 
-        entity = rec.get("Entity", {})
-        registration = rec.get("Registration", {})
-        legal_form = entity.get("LegalForm", {})
-        reg_auth = entity.get("RegistrationAuthority", {})
-        val_auth = registration.get("ValidationAuthority", {})
-        extension = rec.get("Extension", {})
-
         entity_row = {
             "LEI": lei,
-            "LegalName": extract_text_field(entity.get("LegalName")),
-            "LegalJurisdiction": extract_text_field(entity.get("LegalJurisdiction")),
-            "EntityCategory": extract_text_field(entity.get("EntityCategory")),
-            "EntityStatus": extract_text_field(entity.get("EntityStatus")),
-            "EntityCreationDate": parse_timestamp(extract_text_field(entity.get("EntityCreationDate"))),
-            "InitialRegistrationDate": parse_timestamp(extract_text_field(registration.get("InitialRegistrationDate"))),
-            "LastUpdateDate": parse_timestamp(extract_text_field(registration.get("LastUpdateDate"))),
-            "RegistrationStatus": extract_text_field(registration.get("RegistrationStatus")),
-            "NextRenewalDate": parse_timestamp(extract_text_field(registration.get("NextRenewalDate"))),
-            "ManagingLOU": extract_text_field(registration.get("ManagingLOU")),
-            "ValidationSources": extract_text_field(registration.get("ValidationSources")),
-            "ValidationAuthorityID": extract_text_field(val_auth.get("ValidationAuthorityID")),
-            "ValidationAuthorityEntityID": extract_text_field(val_auth.get("ValidationAuthorityEntityID")),
-            "ConformityFlag": extract_text_field(extension.get("gleif:conformity", {}).get("gleif:conformityflag")),
-            "EntityLegalFormCode": extract_text_field(legal_form.get("EntityLegalFormCode")),
-            "OtherLegalForm": extract_text_field(legal_form.get("OtherLegalForm")),
+            "LegalName": extract_text_field(safe_dict_get(rec, "Entity", "LegalName")),
+            "LegalJurisdiction": extract_text_field(safe_dict_get(rec, "Entity", "LegalJurisdiction")),
+            "EntityCategory": extract_text_field(safe_dict_get(rec, "Entity", "EntityCategory")),
+            "EntityStatus": extract_text_field(safe_dict_get(rec, "Entity", "EntityStatus")),
+            "EntityCreationDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Entity", "EntityCreationDate"))),
+            "InitialRegistrationDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "InitialRegistrationDate"))),
+            "LastUpdateDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "LastUpdateDate"))),
+            "RegistrationStatus": extract_text_field(safe_dict_get(rec, "Registration", "RegistrationStatus")),
+            "NextRenewalDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "NextRenewalDate"))),
+            "ManagingLOU": extract_text_field(safe_dict_get(rec, "Registration", "ManagingLOU")),
+            "ValidationSources": extract_text_field(safe_dict_get(rec, "Registration", "ValidationSources")),
+            "ValidationAuthorityID": extract_text_field(safe_dict_get(rec, "Registration", "ValidationAuthority", "ValidationAuthorityID")),
+            "ValidationAuthorityEntityID": extract_text_field(safe_dict_get(rec, "Registration", "ValidationAuthority", "ValidationAuthorityEntityID")),
+            "ConformityFlag": extract_text_field(safe_dict_get(rec, "Extension", "gleif:conformity", "gleif:conformityflag")),
+            "EntityLegalFormCode": extract_text_field(safe_dict_get(rec, "Entity", "LegalForm", "EntityLegalFormCode")),
+            "OtherLegalForm": extract_text_field(safe_dict_get(rec, "Entity", "LegalForm", "OtherLegalForm")),
             "RawData": json.dumps(rec),
         }
         b_entities.append(entity_row)
@@ -281,15 +289,15 @@ def stream_entity_batches(
         # Process addresses
         address_types = [("LegalAddress", "LEGAL"), ("HeadquartersAddress", "HEADQUARTERS")]
         for idx, (json_key, addr_type_name) in enumerate(address_types):
-            addr_dict = entity.get(json_key)
-            if not addr_dict:
+            addr_dict = safe_dict_get(rec, "Entity", json_key)
+            if not isinstance(addr_dict, dict):
                 continue
 
             first_line, add_line = extract_address_lines(addr_dict)
-            city = extract_text_field(addr_dict.get("City"))
-            region = extract_text_field(addr_dict.get("Region"))
-            country = extract_text_field(addr_dict.get("Country"))
-            postal = extract_text_field(addr_dict.get("PostalCode"))
+            city = extract_text_field(safe_dict_get(addr_dict, "City"))
+            region = extract_text_field(safe_dict_get(addr_dict, "Region"))
+            country = extract_text_field(safe_dict_get(addr_dict, "Country"))
+            postal = extract_text_field(safe_dict_get(addr_dict, "PostalCode"))
 
             embedded_coords = extract_embedded_coordinates(rec, idx)
             if embedded_coords:
@@ -387,8 +395,6 @@ def upload_entities_streaming(
     dry_run: bool = False,
 ):
     """Upload LEI entities into Cloud Spanner in streaming parallel worker batches with minimal RAM footprint."""
-    from google.cloud import spanner
-
     if dry_run:
         logger.info("Dry-run mode active. Streaming records and validating parsing...")
         total_entities = 0

@@ -51,6 +51,18 @@ def parse_timestamp(iso_str: Optional[str]) -> Optional[datetime.datetime]:
         return None
 
 
+def safe_dict_get(obj: Any, *keys: str) -> Any:
+    """Safely traverse nested dictionary keys without raising AttributeError on None or non-dict types."""
+    curr = obj
+    for k in keys:
+        if not isinstance(curr, dict):
+            return None
+        curr = curr.get(k)
+        if curr is None:
+            return None
+    return curr
+
+
 def extract_text_field(obj: Any) -> Optional[str]:
     """Extract string value from LEI JSON dict wrapper {"$": "value"}."""
     if isinstance(obj, dict):
@@ -96,16 +108,13 @@ def stream_rr_batches(rr_json_path: str, batch_size: int = 1000) -> Generator[Li
     seen_keys: Set[Tuple[str, str, str]] = set()
 
     for r in stream_json_records(rr_json_path):
-        rec = r.get("RelationshipRecord", {})
-        rel = rec.get("Relationship", {})
-        reg = rec.get("Registration", {})
+        rec = safe_dict_get(r, "RelationshipRecord")
+        if not isinstance(rec, dict):
+            continue
 
-        st_node = rel.get("StartNode", {})
-        end_node = rel.get("EndNode", {})
-
-        st_lei = extract_text_field(st_node.get("NodeID"))
-        end_lei = extract_text_field(end_node.get("NodeID"))
-        rtype = extract_text_field(rel.get("RelationshipType"))
+        st_lei = extract_text_field(safe_dict_get(rec, "Relationship", "StartNode", "NodeID"))
+        end_lei = extract_text_field(safe_dict_get(rec, "Relationship", "EndNode", "NodeID"))
+        rtype = extract_text_field(safe_dict_get(rec, "Relationship", "RelationshipType"))
 
         if not st_lei or not end_lei or not rtype:
             continue
@@ -119,13 +128,13 @@ def stream_rr_batches(rr_json_path: str, batch_size: int = 1000) -> Generator[Li
             "LEI": st_lei,
             "EndLEI": end_lei,
             "RelationshipType": rtype,
-            "RelationshipStatus": extract_text_field(rel.get("RelationshipStatus")),
-            "InitialRegistrationDate": parse_timestamp(extract_text_field(reg.get("InitialRegistrationDate"))),
-            "LastUpdateDate": parse_timestamp(extract_text_field(reg.get("LastUpdateDate"))),
-            "RegistrationStatus": extract_text_field(reg.get("RegistrationStatus")),
-            "NextRenewalDate": parse_timestamp(extract_text_field(reg.get("NextRenewalDate"))),
-            "ManagingLOU": extract_text_field(reg.get("ManagingLOU")),
-            "ValidationSources": extract_text_field(reg.get("ValidationSources")),
+            "RelationshipStatus": extract_text_field(safe_dict_get(rec, "Relationship", "RelationshipStatus")),
+            "InitialRegistrationDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "InitialRegistrationDate"))),
+            "LastUpdateDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "LastUpdateDate"))),
+            "RegistrationStatus": extract_text_field(safe_dict_get(rec, "Registration", "RegistrationStatus")),
+            "NextRenewalDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "NextRenewalDate"))),
+            "ManagingLOU": extract_text_field(safe_dict_get(rec, "Registration", "ManagingLOU")),
+            "ValidationSources": extract_text_field(safe_dict_get(rec, "Registration", "ValidationSources")),
         }
         current_batch.append(row)
 
