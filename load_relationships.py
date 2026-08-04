@@ -101,6 +101,11 @@ def stream_json_records(filepath: str) -> Generator[Dict[str, Any], None, None]:
                     in_record = False
 
 
+def truncate_str(val: Optional[str], max_len: int) -> Optional[str]:
+    """Truncate string value defensively if it exceeds column max_len bounds."""
+    return val[:max_len] if isinstance(val, str) else val
+
+
 def stream_rr_batches(rr_json_path: str, batch_size: int = 1000) -> Generator[List[Dict[str, Any]], None, None]:
     """Stream relationship JSON file in O(1) memory-efficient batch chunks directly from disk file handle."""
     logger.info(f"Streaming relationship records from {rr_json_path}...")
@@ -119,6 +124,10 @@ def stream_rr_batches(rr_json_path: str, batch_size: int = 1000) -> Generator[Li
         if not st_lei or not end_lei or not rtype:
             continue
 
+        st_lei = st_lei[:20]
+        end_lei = end_lei[:20]
+        rtype = rtype[:100]
+
         key = (st_lei, end_lei, rtype)
         if key in seen_keys:
             continue
@@ -128,13 +137,13 @@ def stream_rr_batches(rr_json_path: str, batch_size: int = 1000) -> Generator[Li
             "LEI": st_lei,
             "EndLEI": end_lei,
             "RelationshipType": rtype,
-            "RelationshipStatus": extract_text_field(safe_dict_get(rec, "Relationship", "RelationshipStatus")),
+            "RelationshipStatus": truncate_str(extract_text_field(safe_dict_get(rec, "Relationship", "RelationshipStatus")), 50),
             "InitialRegistrationDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "InitialRegistrationDate"))),
             "LastUpdateDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "LastUpdateDate"))),
-            "RegistrationStatus": extract_text_field(safe_dict_get(rec, "Registration", "RegistrationStatus")),
+            "RegistrationStatus": truncate_str(extract_text_field(safe_dict_get(rec, "Registration", "RegistrationStatus")), 50),
             "NextRenewalDate": parse_timestamp(extract_text_field(safe_dict_get(rec, "Registration", "NextRenewalDate"))),
-            "ManagingLOU": extract_text_field(safe_dict_get(rec, "Registration", "ManagingLOU")),
-            "ValidationSources": extract_text_field(safe_dict_get(rec, "Registration", "ValidationSources")),
+            "ManagingLOU": truncate_str(extract_text_field(safe_dict_get(rec, "Registration", "ManagingLOU")), 100),
+            "ValidationSources": truncate_str(extract_text_field(safe_dict_get(rec, "Registration", "ValidationSources")), 255),
         }
         current_batch.append(row)
 
