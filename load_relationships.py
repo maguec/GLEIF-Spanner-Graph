@@ -163,7 +163,7 @@ def upload_relationships_streaming(
     logger.info(f"Connecting to Cloud Spanner instance='{instance_id}', database='{database_id}'...")
     spanner_client = spanner.Client(project=project_id, disable_builtin_metrics=True)
     instance = spanner_client.instance(instance_id)
-    database = instance.database(database_id, pool=spanner.BurstablePool(target_size=max(concurrency * 2, 32)))
+    database = instance.database(database_id, pool=spanner.BurstyPool(target_size=max(concurrency * 2, 32)))
 
     method_str = "batch mutations" if use_batch_mutations else "transaction commits"
     logger.info(f"Uploading relationships using {concurrency} parallel worker threads via {method_str}...")

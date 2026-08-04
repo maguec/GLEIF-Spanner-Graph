@@ -396,7 +396,7 @@ def upload_entities_streaming(
     logger.info(f"Connecting to Cloud Spanner instance='{instance_id}', database='{database_id}'...")
     spanner_client = spanner.Client(project=project_id, disable_builtin_metrics=True)
     instance = spanner_client.instance(instance_id)
-    database = instance.database(database_id, pool=spanner.BurstablePool(target_size=max(concurrency * 2, 32)))
+    database = instance.database(database_id, pool=spanner.BurstyPool(target_size=max(concurrency * 2, 32)))
 
     method_str = "batch mutations" if use_batch_mutations else "transaction commits"
     logger.info(f"Uploading entities using {concurrency} parallel worker threads via {method_str}...")
@@ -447,7 +447,7 @@ def main():
     default_instance = os.getenv("GOOGLE_SPANNER_INSTANCE") or os.getenv("SPANNER_INSTANCE_ID") or "spanner-instance"
     default_database = os.getenv("GOOGLE_SPANNER_DATABASE") or os.getenv("SPANNER_DATABASE_ID") or "lei-database"
     default_project = os.getenv("GOOGLE_PROJECT") or os.getenv("GCP_PROJECT_ID")
-    default_json = os.getenv("JSON_PATH") or os.getenv("DATA_PATH") or "data/1000.json"
+    default_json = os.getenv("JSON_PATH") or os.getenv("DATA_PATH") or "data/100k.json"
     default_s2_levels = os.getenv("S2_LEVELS") or "6,8,10,12,14,16,18,20"
     default_batch_size = int(os.getenv("BATCH_SIZE") or "500")
     default_concurrency = int(os.getenv("LOAD_CONCURRENCY") or os.getenv("CONCURRENCY") or "16")
