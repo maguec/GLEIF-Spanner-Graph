@@ -1,5 +1,5 @@
 """
-Script to load GLEIF Entity Relationship (RR) data into Google Cloud Spanner.
+Script to load GLEIF Entity Relationship (RR) data into Google Cloud Spanner using parallel worker threads.
 
 Inserts relationship records (e.g., IS_FUND-MANAGED_BY, IS_ULTIMATELY_CONSOLIDATED_BY,
 IS_DIRECTLY_CONSOLIDATED_BY, IS_SUBFUND_OF, IS_INTERNATIONAL_BRANCH_OF, IS_FEEDER_TO)
@@ -9,16 +9,19 @@ Configuration settings are automatically loaded from `.env` file (or system envi
 with command-line arguments taking highest priority.
 
 Usage with `uv`:
-    uv run load_relationships.py --dry-run
-    uv run load_relationships.py
+    uv run --no-sync load_relationships.py --dry-run
+    uv run --no-sync load_relationships.py --concurrency 16
 """
 
 import argparse
+import collections
+import concurrent.futures
 import datetime
 import json
 import logging
 import os
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -59,11 +62,12 @@ def extract_text_field(obj: Any) -> Optional[str]:
 def process_rr_data(rr_json_path: str) -> List[Dict[str, Any]]:
     """Parse relationship JSON file into row dicts for EntityRelationships table."""
     logger.info(f"Loading relationship records from {rr_json_path}...")
+    start_time = time.time()
     with open(rr_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     records = data.get("relations", [])
-    logger.info(f"Loaded {len(records):,} relationship records from {rr_json_path}")
+    logger.info(f"Loaded {len(records):,} relationship records from {rr_json_path} in {time.time() - start_time:.2f}s")
 
     relationship_rows = []
     seen_keys: Set[Tuple[str, str, str]] = set()
@@ -102,7 +106,7 @@ def process_rr_data(rr_json_path: str) -> List[Dict[str, Any]]:
         }
         relationship_rows.append(row)
 
-    logger.info(f"Successfully processed {len(relationship_rows):,} valid relationship rows")
+    logger.info(f"Successfully processed {len(relationship_rows):,} valid relationship rows in {time.time() - start_time:.2f}s")
     return relationship_rows
 
 
@@ -118,21 +122,37 @@ def fetch_existing_leis(database) -> Set[str]:
     return existing_leis
 
 
+def _write_single_batch(database, table_name: str, batch: List[Dict[str, Any]], use_batch_mutations: bool = True):
+    """Write a single batch to Spanner using batch mutations or transaction."""
+    columns = list(batch[0].keys())
+    values = [[r[c] for c in columns] for r in batch]
+
+    if use_batch_mutations:
+        with database.batch() as b:
+            b.insert_or_update(table=table_name, columns=columns, values=values)
+    else:
+        def write_txn(transaction):
+            transaction.insert_or_update(table=table_name, columns=columns, values=values)
+        database.run_in_transaction(write_txn)
+
+
 def upload_to_spanner(
     instance_id: str,
     database_id: str,
     project_id: Optional[str],
     relationship_rows: List[Dict[str, Any]],
     batch_size: int = 1000,
+    concurrency: int = 16,
     filter_existing: bool = True,
+    use_batch_mutations: bool = True,
 ):
-    """Write relationship rows into Cloud Spanner in transaction batches."""
+    """Write relationship rows into Cloud Spanner using concurrent ThreadPoolExecutor workers for maximum throughput."""
     from google.cloud import spanner
 
     logger.info(f"Connecting to Cloud Spanner instance='{instance_id}', database='{database_id}'...")
     spanner_client = spanner.Client(project=project_id, disable_builtin_metrics=True)
     instance = spanner_client.instance(instance_id)
-    database = instance.database(database_id)
+    database = instance.database(database_id, pool=spanner.BurstablePool(target_size=max(concurrency * 2, 32)))
 
     valid_rows = relationship_rows
 
@@ -154,26 +174,45 @@ def upload_to_spanner(
 
     total_rows = len(valid_rows)
     total_batches = (total_rows + batch_size - 1) // batch_size
-    logger.info(f"Uploading {total_rows:,} relationships in {total_batches:,} batches of up to {batch_size} per transaction...")
+    batches = [valid_rows[i : i + batch_size] for i in range(0, total_rows, batch_size)]
 
-    for i in range(0, total_rows, batch_size):
-        batch = valid_rows[i : i + batch_size]
+    method_str = "batch mutations" if use_batch_mutations else "transaction commits"
+    logger.info(
+        f"Uploading {total_rows:,} relationships using {concurrency} parallel worker threads "
+        f"({total_batches:,} batches of {batch_size} rows via {method_str})..."
+    )
 
-        def write_batch(transaction):
-            transaction.insert_or_update(
-                table="EntityRelationships",
-                columns=list(batch[0].keys()),
-                values=[[r[c] for c in batch[0].keys()] for r in batch],
-            )
+    start_upload_time = time.time()
+    completed_rows = 0
+    completed_batches = 0
+    lock = threading.Lock()
 
-        database.run_in_transaction(write_batch)
+    def worker_task(batch_info: Tuple[int, List[Dict[str, Any]]]) -> int:
+        batch_idx, batch_data = batch_info
+        _write_single_batch(database, "EntityRelationships", batch_data, use_batch_mutations=use_batch_mutations)
+        
+        nonlocal completed_rows, completed_batches
+        with lock:
+            completed_rows += len(batch_data)
+            completed_batches += 1
+            elapsed = time.time() - start_upload_time
+            rate = completed_rows / max(0.001, elapsed)
 
-        batch_num = i // batch_size + 1
-        processed_cnt = min(i + batch_size, total_rows)
-        if batch_num % 10 == 0 or processed_cnt == total_rows:
-            logger.info(f"  Committed batch {batch_num:,} / {total_batches:,} ({processed_cnt:,} / {total_rows:,} relationships loaded)")
+            if completed_batches % max(1, total_batches // 10) == 0 or completed_batches == total_batches:
+                logger.info(
+                    f"  [Progress] Committed batch {completed_batches:,} / {total_batches:,} "
+                    f"({completed_rows:,} / {total_rows:,} rows loaded - {rate:,.0f} rows/sec)"
+                )
+        return len(batch_data)
 
-    logger.info(f"Successfully uploaded {total_rows:,} relationship edges into Cloud Spanner!")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [executor.submit(worker_task, (idx, batch)) for idx, batch in enumerate(batches)]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+    total_elapsed = time.time() - start_upload_time
+    avg_rate = total_rows / max(0.001, total_elapsed)
+    logger.info(f"Successfully uploaded {total_rows:,} relationship edges into Cloud Spanner in {total_elapsed:.2f}s ({avg_rate:,.0f} rows/sec)!")
 
 
 def main():
@@ -182,18 +221,25 @@ def main():
     default_project = os.getenv("GOOGLE_PROJECT") or os.getenv("GCP_PROJECT_ID")
     default_rr_json = os.getenv("RR_JSON_PATH") or "data/20260804-0800-gleif-goldencopy-rr-golden-copy.json"
     default_batch_size = int(os.getenv("BATCH_SIZE") or "1000")
+    default_concurrency = int(os.getenv("LOAD_CONCURRENCY") or os.getenv("CONCURRENCY") or "16")
     default_dry_run = os.getenv("DRY_RUN", "false").lower() in ("true", "1", "yes")
 
-    parser = argparse.ArgumentParser(description="Load GLEIF Entity Relationship (RR) data into Cloud Spanner.")
+    parser = argparse.ArgumentParser(description="Load GLEIF Entity Relationship (RR) data into Cloud Spanner with parallel worker threads.")
     parser.add_argument("--rr-path", default=default_rr_json, help=f"Path to input RR JSON data file (default: '{default_rr_json}').")
     parser.add_argument("--instance-id", default=default_instance, help=f"Cloud Spanner Instance ID (default: '{default_instance}').")
     parser.add_argument("--database-id", default=default_database, help=f"Cloud Spanner Database ID (default: '{default_database}').")
     parser.add_argument("--project-id", default=default_project, help=f"Google Cloud Project ID (default: '{default_project}').")
     parser.add_argument("--batch-size", type=int, default=default_batch_size, help=f"Number of relationship records per Spanner commit batch (default: {default_batch_size}).")
+    parser.add_argument("--concurrency", type=int, default=default_concurrency, help=f"Number of parallel worker threads for Spanner uploads (default: {default_concurrency}).")
     parser.add_argument(
         "--no-filter-existing",
         action="store_true",
         help="Skip filtering against existing LEIs in Spanner Entities table.",
+    )
+    parser.add_argument(
+        "--use-transactions",
+        action="store_true",
+        help="Use read-write transactions instead of direct batch mutations.",
     )
     parser.add_argument(
         "--dry-run",
@@ -204,7 +250,10 @@ def main():
 
     args = parser.parse_args()
 
-    logger.info(f"Settings loaded: instance_id='{args.instance_id}', database_id='{args.database_id}', project_id='{args.project_id}', batch_size={args.batch_size}")
+    logger.info(
+        f"Settings loaded: instance_id='{args.instance_id}', database_id='{args.database_id}', "
+        f"project_id='{args.project_id}', batch_size={args.batch_size}, concurrency={args.concurrency}"
+    )
 
     relationship_rows = process_rr_data(args.rr_path)
 
@@ -224,7 +273,9 @@ def main():
             args.project_id,
             relationship_rows,
             batch_size=args.batch_size,
+            concurrency=args.concurrency,
             filter_existing=not args.no_filter_existing,
+            use_batch_mutations=not args.use_transactions,
         )
 
 

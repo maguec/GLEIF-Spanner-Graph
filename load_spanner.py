@@ -335,6 +335,42 @@ def process_json_data(json_path: str, s2_levels: List[int], use_remote: bool = F
     return entities_rows, locations_rows, tokens_rows, relationships_rows
 
 
+import concurrent.futures
+import threading
+
+
+def _write_entity_batch(
+    database,
+    batch_entities: List[Dict],
+    batch_locs: List[Dict],
+    batch_toks: List[Dict],
+    batch_rels: List[Dict],
+    use_batch_mutations: bool = True,
+):
+    """Write a single chunk of entities, locations, S2 tokens, and relationship edges into Spanner."""
+    if use_batch_mutations:
+        with database.batch() as b:
+            if batch_entities:
+                b.insert_or_update(table="Entities", columns=list(batch_entities[0].keys()), values=[[r[c] for c in batch_entities[0].keys()] for r in batch_entities])
+            if batch_locs:
+                b.insert_or_update(table="EntityLocations", columns=list(batch_locs[0].keys()), values=[[r[c] for c in batch_locs[0].keys()] for r in batch_locs])
+            if batch_toks:
+                b.insert_or_update(table="LocationS2Tokens", columns=list(batch_toks[0].keys()), values=[[r[c] for c in batch_toks[0].keys()] for r in batch_toks])
+            if batch_rels:
+                b.insert_or_update(table="EntityHasLocation", columns=list(batch_rels[0].keys()), values=[[r[c] for c in batch_rels[0].keys()] for r in batch_rels])
+    else:
+        def write_txn(transaction):
+            if batch_entities:
+                transaction.insert_or_update(table="Entities", columns=list(batch_entities[0].keys()), values=[[r[c] for c in batch_entities[0].keys()] for r in batch_entities])
+            if batch_locs:
+                transaction.insert_or_update(table="EntityLocations", columns=list(batch_locs[0].keys()), values=[[r[c] for c in batch_locs[0].keys()] for r in batch_locs])
+            if batch_toks:
+                transaction.insert_or_update(table="LocationS2Tokens", columns=list(batch_toks[0].keys()), values=[[r[c] for c in batch_toks[0].keys()] for r in batch_toks])
+            if batch_rels:
+                transaction.insert_or_update(table="EntityHasLocation", columns=list(batch_rels[0].keys()), values=[[r[c] for c in batch_rels[0].keys()] for r in batch_rels])
+        database.run_in_transaction(write_txn)
+
+
 def upload_to_spanner(
     instance_id: str,
     database_id: str,
@@ -344,12 +380,14 @@ def upload_to_spanner(
     tokens_rows: List[Dict],
     relationships_rows: List[Dict],
     batch_size: int = 500,
+    concurrency: int = 16,
+    use_batch_mutations: bool = True,
 ):
-    """Write rows into Cloud Spanner in chunked transaction batches to stay within Spanner gRPC payload limits."""
+    """Write rows into Cloud Spanner using parallel ThreadPoolExecutor workers for maximum throughput."""
     logger.info(f"Connecting to Cloud Spanner instance='{instance_id}', database='{database_id}'...")
     spanner_client = spanner.Client(project=project_id, disable_builtin_metrics=True)
     instance = spanner_client.instance(instance_id)
-    database = instance.database(database_id)
+    database = instance.database(database_id, pool=spanner.BurstablePool(target_size=max(concurrency * 2, 32)))
 
     # Index locations, tokens, and relationships by LEI for atomic batch chunking
     locs_by_lei = collections.defaultdict(list)
@@ -367,7 +405,7 @@ def upload_to_spanner(
 
     total_entities = len(entities_rows)
     total_batches = (total_entities + batch_size - 1) // batch_size
-    logger.info(f"Uploading {total_entities:,} entities in {total_batches:,} batches of up to {batch_size} entities per transaction...")
+    batches_data = []
 
     for i in range(0, total_entities, batch_size):
         batch_entities = entities_rows[i : i + batch_size]
@@ -376,41 +414,45 @@ def upload_to_spanner(
         batch_locs = [loc for lei in batch_leis for loc in locs_by_lei.get(lei, [])]
         batch_toks = [tok for lei in batch_leis for tok in toks_by_lei.get(lei, [])]
         batch_rels = [rel for lei in batch_leis for rel in rels_by_lei.get(lei, [])]
+        batches_data.append((batch_entities, batch_locs, batch_toks, batch_rels))
 
-        def write_batch(transaction):
-            if batch_entities:
-                transaction.insert_or_update(
-                    table="Entities",
-                    columns=list(batch_entities[0].keys()),
-                    values=[[r[c] for c in batch_entities[0].keys()] for r in batch_entities],
-                )
-            if batch_locs:
-                transaction.insert_or_update(
-                    table="EntityLocations",
-                    columns=list(batch_locs[0].keys()),
-                    values=[[r[c] for c in batch_locs[0].keys()] for r in batch_locs],
-                )
-            if batch_toks:
-                transaction.insert_or_update(
-                    table="LocationS2Tokens",
-                    columns=list(batch_toks[0].keys()),
-                    values=[[r[c] for c in batch_toks[0].keys()] for r in batch_toks],
-                )
-            if batch_rels:
-                transaction.insert_or_update(
-                    table="EntityHasLocation",
-                    columns=list(batch_rels[0].keys()),
-                    values=[[r[c] for c in batch_rels[0].keys()] for r in batch_rels],
-                )
+    method_str = "batch mutations" if use_batch_mutations else "transaction commits"
+    logger.info(
+        f"Uploading {total_entities:,} entities using {concurrency} parallel worker threads "
+        f"({total_batches:,} batches of {batch_size} entities via {method_str})..."
+    )
 
-        database.run_in_transaction(write_batch)
+    start_upload_time = time.time()
+    completed_entities = 0
+    completed_batches = 0
+    lock = threading.Lock()
 
-        batch_num = i // batch_size + 1
-        processed_cnt = min(i + batch_size, total_entities)
-        if batch_num % 10 == 0 or processed_cnt == total_entities:
-            logger.info(f"  Committed batch {batch_num:,} / {total_batches:,} ({processed_cnt:,} / {total_entities:,} entities loaded)")
+    def worker_task(batch_tuple: Tuple[List[Dict], List[Dict], List[Dict], List[Dict]]) -> int:
+        b_entities, b_locs, b_toks, b_rels = batch_tuple
+        _write_entity_batch(database, b_entities, b_locs, b_toks, b_rels, use_batch_mutations=use_batch_mutations)
 
-    logger.info(f"Successfully uploaded {total_entities:,} entities into Cloud Spanner!")
+        nonlocal completed_entities, completed_batches
+        with lock:
+            completed_entities += len(b_entities)
+            completed_batches += 1
+            elapsed = time.time() - start_upload_time
+            rate = completed_entities / max(0.001, elapsed)
+
+            if completed_batches % max(1, total_batches // 10) == 0 or completed_batches == total_batches:
+                logger.info(
+                    f"  [Progress] Committed batch {completed_batches:,} / {total_batches:,} "
+                    f"({completed_entities:,} / {total_entities:,} entities loaded - {rate:,.0f} entities/sec)"
+                )
+        return len(b_entities)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [executor.submit(worker_task, batch_tuple) for batch_tuple in batches_data]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+    total_elapsed = time.time() - start_upload_time
+    avg_rate = total_entities / max(0.001, total_elapsed)
+    logger.info(f"Successfully uploaded {total_entities:,} entities into Cloud Spanner in {total_elapsed:.2f}s ({avg_rate:,.0f} entities/sec)!")
 
 
 def main():
@@ -420,21 +462,28 @@ def main():
     default_json = os.getenv("JSON_PATH") or os.getenv("DATA_PATH") or "data/1000.json"
     default_s2_levels = os.getenv("S2_LEVELS") or "6,8,10,12,14,16,18,20"
     default_batch_size = int(os.getenv("BATCH_SIZE") or "500")
+    default_concurrency = int(os.getenv("LOAD_CONCURRENCY") or os.getenv("CONCURRENCY") or "16")
     default_remote = os.getenv("USE_REMOTE_GEOCODER", "false").lower() in ("true", "1", "yes")
     default_dry_run = os.getenv("DRY_RUN", "false").lower() in ("true", "1", "yes")
 
-    parser = argparse.ArgumentParser(description="Load LEI JSON data into Cloud Spanner with S2 indexing and Graph Relationships.")
+    parser = argparse.ArgumentParser(description="Load LEI JSON data into Cloud Spanner with S2 indexing, Graph Relationships, and parallel worker threads.")
     parser.add_argument("--json-path", default=default_json, help=f"Path to input JSON data file (default: '{default_json}').")
     parser.add_argument("--instance-id", default=default_instance, help=f"Cloud Spanner Instance ID (default: '{default_instance}').")
     parser.add_argument("--database-id", default=default_database, help=f"Cloud Spanner Database ID (default: '{default_database}').")
     parser.add_argument("--project-id", default=default_project, help=f"Google Cloud Project ID (default: '{default_project}').")
     parser.add_argument("--s2-levels", default=default_s2_levels, help=f"Comma-separated list of S2 levels (default: '{default_s2_levels}').")
     parser.add_argument("--batch-size", type=int, default=default_batch_size, help=f"Number of entity records per Spanner commit batch (default: {default_batch_size}).")
+    parser.add_argument("--concurrency", type=int, default=default_concurrency, help=f"Number of parallel worker threads for Spanner uploads (default: {default_concurrency}).")
     parser.add_argument(
         "--use-remote-geocoder",
         action="store_true",
         default=default_remote,
         help="Use remote Nominatim HTTP API for geocoding. Default is 100%% offline calculation.",
+    )
+    parser.add_argument(
+        "--use-transactions",
+        action="store_true",
+        help="Use read-write transactions instead of direct batch mutations.",
     )
     parser.add_argument(
         "--dry-run",
@@ -446,7 +495,10 @@ def main():
     args = parser.parse_args()
 
     s2_levels = [int(lvl.strip()) for lvl in args.s2_levels.split(",") if lvl.strip()]
-    logger.info(f"Settings loaded: instance_id='{args.instance_id}', database_id='{args.database_id}', project_id='{args.project_id}', batch_size={args.batch_size}")
+    logger.info(
+        f"Settings loaded: instance_id='{args.instance_id}', database_id='{args.database_id}', "
+        f"project_id='{args.project_id}', batch_size={args.batch_size}, concurrency={args.concurrency}"
+    )
     logger.info(f"Using S2 multi-level index levels: {s2_levels}")
 
     entities_rows, locations_rows, tokens_rows, relationships_rows = process_json_data(args.json_path, s2_levels, use_remote=args.use_remote_geocoder)
@@ -459,18 +511,6 @@ def main():
 
     if entities_rows:
         logger.info(f"Sample Entity LEI: {entities_rows[0]['LEI']} - {entities_rows[0]['LegalName']}")
-    if locations_rows:
-        sample_loc = locations_rows[0]
-        logger.info(
-            f"Sample Location Node: LocationId={sample_loc['LocationId']}, LEI={sample_loc['LEI']}, "
-            f"Type={sample_loc['AddressType']}, Lat={sample_loc['Latitude']}, Lng={sample_loc['Longitude']}, S2TokenStr={sample_loc['S2TokenStr']}"
-        )
-    if tokens_rows:
-        sample_tok = tokens_rows[0]
-        logger.info(f"Sample S2 Token: LocationId={sample_tok['LocationId']}, Level={sample_tok['S2Level']}, S2TokenStr={sample_tok['S2TokenStr']}")
-    if relationships_rows:
-        sample_rel = relationships_rows[0]
-        logger.info(f"Sample Graph Relationship Edge: {sample_rel['LEI']} -> [{sample_rel['RelationshipType']}] -> {sample_rel['LocationId']}")
 
     if args.dry_run:
         logger.info("Dry-run mode active. Skipping Spanner database write.")
@@ -484,8 +524,11 @@ def main():
             tokens_rows,
             relationships_rows,
             batch_size=args.batch_size,
+            concurrency=args.concurrency,
+            use_batch_mutations=not args.use_transactions,
         )
 
 
 if __name__ == "__main__":
     main()
+
