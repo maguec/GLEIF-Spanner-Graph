@@ -12,6 +12,7 @@ The spatial indexing follows the flexible multi-level S2 approach described in:
 - [`slides.html`](file://docs/slides.html): Quick background on using S2
 - [`DDL.sql`](file://DDL.sql): Single SQL schema file defining all relational tables, S2 token tables, secondary indexes, and the `LEIGraph` Property Graph schema.
 - [`load_spanner.py`](file://load_spanner.py): Python loader script managed by `uv`. Parses LEI records, geocodes addresses, generates S2 leaf cell IDs and multi-level tokens, populates node & edge tables, and batches uploads into Spanner.
+- [`SampleQueries.md`](file://SampleQueries.md): 5 ready-to-run queries for Cloud Spanner Studio covering Entity Resolution, S2 spatial indexing, and Property Graph traversal.
 - [`query_spanner.py`](file://query_spanner.py): Sample Python script to query `LEIGraph` using S2 cell tokens and compute closest companies to customer coordinates (`--lat` and `--lng`).
 - [`Makefile`](file://Makefile): Automation workflow for creating Spanner instances, initializing databases with DDL, updating schemas, loading data, and running graph queries.
 - [`pyproject.toml`](file://pyproject.toml): Project dependencies for `uv`.
