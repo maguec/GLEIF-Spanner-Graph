@@ -77,6 +77,17 @@ CREATE TABLE EntityRelationships (
 ) PRIMARY KEY (LEI, EndLEI, RelationshipType),
   INTERLEAVE IN PARENT Entities ON DELETE CASCADE;
 
+-- Analytics table storing PageRank scores, Community IDs, and Jaccard similarity metrics
+CREATE TABLE EntityGraphAnalytics (
+    LEI STRING(20) NOT NULL,
+    PageRankScore FLOAT64,
+    CommunityId INT64,
+    JaccardCommunityId INT64,
+    JaccardSimilarityScore FLOAT64,
+    LastUpdated TIMESTAMP DEFAULT (CURRENT_TIMESTAMP())
+) PRIMARY KEY (LEI),
+  INTERLEAVE IN PARENT Entities ON DELETE CASCADE;
+
 -- Secondary index for fast range and point lookups on S2 tokens across levels
 CREATE INDEX IndexLocationS2TokensByToken ON LocationS2Tokens(S2Token, S2Level);
 

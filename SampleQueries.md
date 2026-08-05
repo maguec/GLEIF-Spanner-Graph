@@ -291,3 +291,112 @@ RETURN
     e2.EntityCategory AS target_category
 LIMIT 20;
 ```
+
+---
+
+## Query 7: PageRank Centrality (Write directly to `EntityGraphAnalytics` Table)
+
+### Business Scenario
+Compute PageRank centrality scores across all entities using Spanner Data Boost scale-up mode and update the `EntityGraphAnalytics` table directly.
+
+### How It Works
+Invokes `PageRank` wrapped inside `EXPORT DATA OPTIONS (format = "CLOUD_SPANNER", table = "EntityGraphAnalytics", write_mode = "upsert_ignore_all")` to write scores back to Spanner.
+
+```sql
+EXPORT DATA OPTIONS (
+  format = "CLOUD_SPANNER",
+  table = "EntityGraphAnalytics",
+  write_mode = 'upsert_ignore_all'
+) AS
+GRAPH LEIGraph
+CALL PageRank(
+    node_labels => ['Entity'],
+    edge_labels => ['IS_RELATED_TO'],
+    damping_factor => 0.85,
+    max_iterations => 20
+) YIELD node, score
+RETURN 
+    node.LEI AS LEI,
+    score AS PageRankScore;
+```
+
+---
+
+## Query 8: Community Detection (Modularity Clustering to `EntityGraphAnalytics`)
+
+### Business Scenario
+Group entities into community structures using Modularity Clustering in scale-up mode and persist the community IDs into the `EntityGraphAnalytics` table.
+
+### How It Works
+Uses `EXPORT DATA OPTIONS` to execute `ModularityClustering` and update the `CommunityId` column for each `LEI`.
+
+```sql
+EXPORT DATA OPTIONS (
+  format = "CLOUD_SPANNER",
+  table = "EntityGraphAnalytics",
+  write_mode = 'upsert_ignore_all'
+) AS
+GRAPH LEIGraph
+CALL ModularityClustering(
+    node_labels => ['Entity'],
+    edge_labels => ['IS_RELATED_TO'],
+    resolution => 1.0
+) YIELD node, cluster
+RETURN 
+    node.LEI AS LEI,
+    cluster AS CommunityId;
+```
+
+---
+
+## Query 9: Jaccard-Based Community Detection (Correlation Clustering)
+
+### Business Scenario
+Cluster entities based on neighborhood overlap / Jaccard similarity and update `JaccardCommunityId` in `EntityGraphAnalytics`.
+
+### How It Works
+Executes `CorrelationClustering` with resolution tuning in scale-up mode and updates `JaccardCommunityId`.
+
+```sql
+EXPORT DATA OPTIONS (
+  format = "CLOUD_SPANNER",
+  table = "EntityGraphAnalytics",
+  write_mode = 'upsert_ignore_all'
+) AS
+GRAPH LEIGraph
+CALL CorrelationClustering(
+    node_labels => ['Entity'],
+    edge_labels => ['IS_RELATED_TO'],
+    resolution => 0.5
+) YIELD node, cluster
+RETURN 
+    node.LEI AS LEI,
+    cluster AS JaccardCommunityId;
+```
+
+---
+
+## Query 10: Unified Entity Profile (Joining Entities with Populated Graph Analytics)
+
+### Business Scenario
+After running Queries 7, 8, and 9 sequentially to populate `PageRankScore`, `CommunityId`, and `JaccardCommunityId`, query the merged 360° entity profile.
+
+### How It Works
+Performs a standard SQL `JOIN` between `Entities` and `EntityGraphAnalytics`.
+
+```sql
+SELECT 
+    e.LEI,
+    e.LegalName,
+    e.EntityCategory,
+    e.EntityStatus,
+    a.PageRankScore,
+    a.CommunityId,
+    a.JaccardCommunityId,
+    a.LastUpdated
+FROM Entities AS e
+JOIN EntityGraphAnalytics AS a ON e.LEI = a.LEI
+ORDER BY a.PageRankScore DESC
+LIMIT 50;
+```
+
