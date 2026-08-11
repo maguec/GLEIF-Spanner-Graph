@@ -367,10 +367,29 @@ def query_community_graph(seed_lei: str, max_hops: int = 1, limit: int = 150):
 
         total_community_seeds = len(community_members)
 
-        # 3. For EACH community seed node, run BFS up to max_hops to find reachable destinations
-        # dest_paths[dest_lei] = { community_seed_lei: min_hop_from_this_seed }
+        # 3. For EACH community seed node, run BFS up to max_hops to find reachable destinations and construct visual graph
         dest_paths = defaultdict(dict)
         all_dest_leis = set(comm_seed_map.keys())
+        nodes_dict = {}
+        links = []
+        seen_links = set()
+
+        # Initialize community starting nodes
+        for c_lei, c_info in comm_seed_map.items():
+            nodes_dict[c_lei] = {
+                "id": c_lei,
+                "lei": c_lei,
+                "name": c_info["name"],
+                "category": c_info["category"],
+                "jurisdiction": c_info["jurisdiction"],
+                "status": "ACTIVE",
+                "regStatus": "ISSUED",
+                "hop": 0,
+                "isSeed": (c_lei == seed_lei),
+                "isCommunityMember": True,
+                "pageRankScore": c_info["pageRankScore"],
+                "communityId": comm_id
+            }
 
         for c_lei in comm_seed_map.keys():
             visited = {c_lei: 0}
@@ -383,18 +402,45 @@ def query_community_graph(seed_lei: str, max_hops: int = 1, limit: int = 150):
                 params = {"frontiers": frontier}
                 ptypes = {"frontiers": spanner.param_types.Array(spanner.param_types.STRING)}
 
-                q_out = "SELECT LEI, EndLEI FROM EntityRelationships WHERE LEI IN UNNEST(@frontiers)"
-                q_in = "SELECT LEI, EndLEI FROM EntityRelationships WHERE EndLEI IN UNNEST(@frontiers)"
+                q_out = "SELECT LEI, EndLEI, RelationshipType, RelationshipStatus FROM EntityRelationships WHERE LEI IN UNNEST(@frontiers)"
+                q_in = "SELECT LEI, EndLEI, RelationshipType, RelationshipStatus FROM EntityRelationships WHERE EndLEI IN UNNEST(@frontiers)"
 
-                rows_out = snapshot.execute_sql(q_out, params=params, param_types=ptypes)
-                rows_in = snapshot.execute_sql(q_in, params=params, param_types=ptypes)
+                rows_out = list(snapshot.execute_sql(q_out, params=params, param_types=ptypes))
+                rows_in = list(snapshot.execute_sql(q_in, params=params, param_types=ptypes))
 
-                for s, t in list(rows_out) + list(rows_in):
+                for r in rows_out + rows_in:
+                    s, t = r[0], r[1]
+                    rel_type = r[2] or "RELATED_TO"
+                    rel_st = r[3] or "ACTIVE"
+
+                    pair_key = (s, t, rel_type)
+                    if pair_key not in seen_links:
+                        seen_links.add(pair_key)
+                        links.append({
+                            "source": s,
+                            "target": t,
+                            "type": rel_type,
+                            "status": rel_st
+                        })
+
                     for nid in (s, t):
                         if nid not in visited:
                             visited[nid] = current_hop
                             next_frontier.add(nid)
                             all_dest_leis.add(nid)
+                            if nid not in nodes_dict and len(nodes_dict) < limit:
+                                nodes_dict[nid] = {
+                                    "id": nid,
+                                    "lei": nid,
+                                    "name": nid,
+                                    "category": "ENTITY",
+                                    "jurisdiction": "N/A",
+                                    "status": "ACTIVE",
+                                    "regStatus": "ISSUED",
+                                    "hop": current_hop,
+                                    "isSeed": False,
+                                    "isCommunityMember": (nid in comm_seed_map)
+                                }
                 frontier = list(next_frontier)
 
             for dest_lei, hop_dist in visited.items():
@@ -426,6 +472,13 @@ def query_community_graph(seed_lei: str, max_hops: int = 1, limit: int = 150):
                     "pageRankScore": mrow[5] or 0.0,
                     "communityId": mrow[6] if mrow[6] is not None else -1
                 }
+                if m_id in nodes_dict:
+                    nodes_dict[m_id]["name"] = mrow[1] or m_id
+                    nodes_dict[m_id]["category"] = mrow[2] or "ENTITY"
+                    nodes_dict[m_id]["jurisdiction"] = mrow[3] or "N/A"
+                    nodes_dict[m_id]["status"] = mrow[4] or "ACTIVE"
+                    nodes_dict[m_id]["pageRankScore"] = mrow[5] or 0.0
+                    nodes_dict[m_id]["communityId"] = mrow[6] if mrow[6] is not None else -1
 
         # 5. Assemble and rank destination table by connected community seeds DESC
         destinations_list = []
@@ -490,8 +543,12 @@ def query_community_graph(seed_lei: str, max_hops: int = 1, limit: int = 150):
                 "totalMembers": len(community_members),
                 "members": community_members
             },
+            "nodes": list(nodes_dict.values()),
+            "links": links,
             "destinations": destinations_list[:limit],
             "stats": {
+                "nodeCount": len(nodes_dict),
+                "linkCount": len(links),
                 "communityMemberCount": len(community_members),
                 "destinationCount": len(destinations_list),
                 "maxHopsReached": max_hops

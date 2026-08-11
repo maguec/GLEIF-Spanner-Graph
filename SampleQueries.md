@@ -400,3 +400,132 @@ ORDER BY a.PageRankScore DESC
 LIMIT 50;
 ```
 
+---
+
+## Query 11: Web App Global PageRank Leaderboard (`Page Rank` Tab Query)
+
+### Business Scenario
+Powers the **Page Rank** tab leaderboard inside the LEI Graph Explorer web application. Lists top legal entities ordered by precomputed degree and link-structure centrality (`PageRankScore`), joined with entity master profile data and community cluster ID assignments.
+
+### How It Works
+Queries `EntityGraphAnalytics` joined directly with `Entities` without `@param` markers so it can be copied straight into **Cloud Spanner Studio** and run immediately. Returns the top 50 network hubs (e.g. Custody Bank of Japan, Master Trust Bank of Japan, BlackRock Asset Management, UBS, Union Investment, etc.).
+
+```sql
+SELECT 
+    a.LEI,
+    e.LegalName,
+    a.PageRankScore,
+    a.CommunityId,
+    a.JaccardCommunityId,
+    e.EntityCategory,
+    e.LegalJurisdiction,
+    e.EntityStatus
+FROM EntityGraphAnalytics AS a
+JOIN Entities AS e ON a.LEI = e.LEI
+ORDER BY a.PageRankScore DESC
+LIMIT 50;
+```
+
+---
+
+## Query 12: Web App Community Cluster Roster (`Community` Tab Starting Cluster Query)
+
+### Business Scenario
+Retrieves all starting corporate entities belonging to a specific precomputed graph community cluster (e.g. Community `#1283192` matching **Alphabet Inc.** and its corporate entities, or Community `#815529` matching **Custody Bank of Japan**).
+
+### How It Works
+Filters `EntityGraphAnalytics` by explicit Community ID literal `1283192` joined with `Entities`, ordering all starting community seed entities by individual PageRank centrality.
+
+```sql
+SELECT 
+    a.LEI,
+    e.LegalName,
+    a.PageRankScore,
+    a.CommunityId,
+    e.EntityCategory,
+    e.LegalJurisdiction,
+    e.EntityStatus
+FROM EntityGraphAnalytics AS a
+JOIN Entities AS e ON a.LEI = e.LEI
+WHERE a.CommunityId = 1283192  -- Concrete starting point: Alphabet Inc. Community (#1283192)
+ORDER BY a.PageRankScore DESC;
+```
+
+---
+
+## Query 13: Spanner `GRAPH_TABLE` Multi-Source Community Outward Reachability Graph Query
+
+### Business Scenario
+Powers the **Community View** graph and table analysis in the application using Cloud Spanner's native **Property Graph GQL (`GRAPH_TABLE`)** query capabilities against `LEIGraph`. Starting from **ALL entities within a community cluster simultaneously** as multi-source graph seeds (Alphabet Inc. cluster `#1283192`, 19 seed nodes), traverses graph paths to outward destination entities, and ranks destinations by how many distinct community seed entities have an outgoing pathway to that destination.
+
+### How It Works
+Invokes `GRAPH_TABLE(LEIGraph MATCH ...)` directly inside standard Spanner SQL to perform multi-hop graph pattern matching (`(e1:Entity)-[r:IS_RELATED_TO]->(e2:Entity)` and `(e1:Entity)-[r1:IS_RELATED_TO]->(mid:Entity)-[r2:IS_RELATED_TO]->(e2:Entity)`), joining graph paths back to `EntityGraphAnalytics` for cluster filtering.
+
+```sql
+WITH CommOutwardGraph AS (
+    -- 1-Hop Outward Graph Paths from all Community Cluster members using GRAPH_TABLE
+    SELECT 
+        g.SeedLEI,
+        g.SeedName,
+        g.DestLEI,
+        g.DestName,
+        g.RelType,
+        1 AS HopDistance
+    FROM EntityGraphAnalytics AS a
+    JOIN GRAPH_TABLE(
+        LEIGraph
+        MATCH (e1:Entity)-[r:IS_RELATED_TO]->(e2:Entity)
+        COLUMNS (
+            e1.LEI AS SeedLEI,
+            e1.LegalName AS SeedName,
+            e2.LEI AS DestLEI,
+            e2.LegalName AS DestName,
+            r.RelationshipType AS RelType
+        )
+    ) AS g ON a.LEI = g.SeedLEI
+    WHERE a.CommunityId = 1283192  -- Concrete starting point: Alphabet Inc. Community (#1283192)
+
+    UNION DISTINCT
+
+    -- 2-Hop Outward Graph Paths from all Community Cluster members using GRAPH_TABLE
+    SELECT 
+        g2.SeedLEI,
+        g2.SeedName,
+        g2.DestLEI,
+        g2.DestName,
+        g2.RelType,
+        2 AS HopDistance
+    FROM EntityGraphAnalytics AS a
+    JOIN GRAPH_TABLE(
+        LEIGraph
+        MATCH (e1:Entity)-[r1:IS_RELATED_TO]->(mid:Entity)-[r2:IS_RELATED_TO]->(e2:Entity)
+        COLUMNS (
+            e1.LEI AS SeedLEI,
+            e1.LegalName AS SeedName,
+            e2.LEI AS DestLEI,
+            e2.LegalName AS DestName,
+            r2.RelationshipType AS RelType
+        )
+    ) AS g2 ON a.LEI = g2.SeedLEI
+    WHERE a.CommunityId = 1283192
+)
+SELECT 
+    cg.DestLEI,
+    cg.DestName AS DestinationName,
+    COUNT(DISTINCT cg.SeedLEI) AS ConnectedCommunitySeedsCount,
+    19 AS TotalCommunitySeeds,
+    ROUND((COUNT(DISTINCT cg.SeedLEI) / 19.0) * 100, 1) AS ConnectedSeedPercentage,
+    MIN(cg.HopDistance) AS MinHopDistance,
+    COALESCE(dest_a.PageRankScore, 0.0) AS PageRankScore,
+    dest_e.EntityCategory,
+    dest_e.LegalJurisdiction
+FROM CommOutwardGraph AS cg
+JOIN Entities AS dest_e ON cg.DestLEI = dest_e.LEI
+LEFT JOIN EntityGraphAnalytics AS dest_a ON cg.DestLEI = dest_a.LEI
+GROUP BY cg.DestLEI, cg.DestName, dest_a.PageRankScore, dest_e.EntityCategory, dest_e.LegalJurisdiction
+ORDER BY ConnectedCommunitySeedsCount DESC, MinHopDistance ASC, PageRankScore DESC
+LIMIT 50;
+```
+
+
+

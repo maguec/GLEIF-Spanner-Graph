@@ -1064,6 +1064,15 @@
         $("#stats-title").text("Traversal Summary");
         $("#run-query-btn").html('<i class="fa-solid fa-play me-1"></i> Traverse');
 
+        // Restore legend for explorer
+        $(".legend-box").html(`
+          <div class="section-title mb-2">Hop Distance Legend</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span><span>Seed Lookup Entity (Hop 0)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #38bdf8;"></span><span>1-Hop Connected Entity</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #34d399;"></span><span>2-Hop Connected Entity</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>3-Hop Connected Entity</span></div>
+        `);
+
         // Restore explorer default hop = 2 if switching back
         currentHops = 2;
         $("#hop-selector .hop-btn").removeClass("active");
@@ -1072,13 +1081,23 @@
 
         loadGraph(activeLEI, currentHops);
       } else if (view === 'community') {
-        $("#graph-workspace").hide();
+        $("#graph-workspace").css("display", "flex");
         $("#pagerank-view").hide();
         $("#community-table-view").show();
         $("#community-cluster-section").show();
         $("#leaf-cap-control").hide();
-        $("#stats-title").text("Community Summary");
+        $("#stats-title").text("Community Graph & Pathways");
         $("#run-query-btn").html('<i class="fa-solid fa-users-gear me-1"></i> Analyze Reachability');
+
+        // Customize legend for Community starting nodes and multi-hop outward graph
+        $(".legend-box").html(`
+          <div class="section-title mb-2">Community Graph Legend</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>Community Cluster Starting Member</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span><span>Selected Entity</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #38bdf8;"></span><span>1-Hop Outward Destination</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #34d399;"></span><span>2-Hop Outward Destination</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>3-Hop Outward Destination</span></div>
+        `);
 
         // Default to 1 hop outward from community starting seeds
         currentHops = 1;
@@ -1108,9 +1127,10 @@
     }
 
     /**
-     * Load Community Reachability Analysis Table from backend API /api/community
+     * Load Community Graph & Reachability Analysis Table from backend API /api/community
      * Calculates destinations reachable within hops (1, 2, or 3) and counts how many
-     * distinct community seed nodes have a pathway to each destination sorted by connections DESC.
+     * distinct community seed nodes have a pathway to each destination sorted by connections DESC,
+     * while rendering the interactive visual network graph of outward cluster pathways.
      */
     function loadCommunity(lei, hops) {
       $("#loading-spinner").css("display", "flex");
@@ -1126,6 +1146,9 @@
             const seedCount = data.stats?.communityMemberCount || comm.totalMembers || 0;
             const dests = data.destinations || [];
 
+            $("#stat-nodes").text(data.stats?.nodeCount || 0);
+            $("#stat-links").text(data.stats?.linkCount || 0);
+
             $("#comm-table-cluster-badge").text(commId !== -1 ? `Community #${commId}` : 'No Cluster Assigned');
             $("#comm-table-seed-count").text(`${seedCount} Community Seeds`);
             $("#comm-table-seed-name").text(comm.members?.[0]?.name || lei);
@@ -1138,6 +1161,9 @@
               $("#comm-table-top-dest").text("--");
               $("#comm-table-top-overlap").text("--");
             }
+
+            // Render interactive D3 Graph of all starting Community Cluster seeds expanding outward!
+            renderD3Graph(data.nodes || [], data.links || []);
 
             // Populate Community Member chip list in inspector sidebar
             const members = comm.members || [];
@@ -1256,8 +1282,8 @@
             });
 
           } catch (e) {
-            console.error("Error rendering community table:", e);
-            alert("Error rendering community reachability table: " + e.message);
+            console.error("Error rendering community graph & table:", e);
+            alert("Error rendering community analysis: " + e.message);
           }
         })
         .fail(function(err) {
