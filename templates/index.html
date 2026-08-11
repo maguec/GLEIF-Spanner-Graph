@@ -631,16 +631,16 @@
     <div class="rel-dual-search-container" id="rel-dual-search-container">
       <div class="rel-input-box">
         <i class="fa-solid fa-circle-play rel-icon text-primary"></i>
-        <input type="text" id="rel-source-input" placeholder="Source: e.g. PE Capital XI"
-               data-lei="529900EGRFQDZFSHYN17" value="" autocomplete="off">
+        <input type="text" id="rel-source-input" placeholder="Source: Enter company name or LEI..."
+               data-lei="" value="" autocomplete="off">
       </div>
       <button type="button" class="rel-swap-btn" id="rel-swap-btn" title="Swap Source and Target">
         <i class="fa-solid fa-right-left"></i>
       </button>
       <div class="rel-input-box">
         <i class="fa-solid fa-flag-checkered rel-icon text-warning"></i>
-        <input type="text" id="rel-target-input" placeholder="Target: e.g. Columbus Global Fund"
-               data-lei="529900MHMTMUTJWK3E84" value="" autocomplete="off">
+        <input type="text" id="rel-target-input" placeholder="Target: Enter company name or LEI..."
+               data-lei="" value="" autocomplete="off">
       </div>
     </div>
 
@@ -702,13 +702,21 @@
           </button>
         </div>
 
-        <!-- Relationship example chip for Show Relationship view only -->
+        <!-- Relationship example chips for Show Relationship view only -->
         <div class="relationship-example-chips" id="relationship-example-chips" style="display: none;">
-          <button class="sample-chip" id="pe-columbus-example-btn" style="border-color: rgba(168,85,247,0.4); background: rgba(168,85,247,0.08);">
+          <button class="sample-chip mb-2" id="gs-3hop-example-btn" style="border-color: rgba(168,85,247,0.4); background: rgba(168,85,247,0.08);">
             <i class="fa-solid fa-route text-purple me-1" style="color: #a855f7;"></i>
             <div>
+              <div class="fw-semibold text-white">Goldman Sachs ESG Portfolio → GS Asset Management B.V.</div>
+              <div class="lei-code ms-0 text-info">Verified 3-Hop Spanner Shortest Path</div>
+            </div>
+          </button>
+
+          <button class="sample-chip" id="pe-columbus-example-btn" style="border-color: rgba(56,189,248,0.3); background: rgba(56,189,248,0.06);">
+            <i class="fa-solid fa-route text-info me-1"></i>
+            <div>
               <div class="fw-semibold text-white">PE Capital XI → Columbus Global Fund</div>
-              <div class="lei-code ms-0 text-info">2-Hop Spanner ANY SHORTEST Path</div>
+              <div class="lei-code ms-0 text-muted">2-Hop Spanner Shortest Path Reference</div>
             </div>
           </button>
         </div>
@@ -1098,7 +1106,23 @@
         }
       });
 
-      // PE Capital XI -> Columbus Global Fund quick launcher chip (on Show Relationship view)
+      // Goldman Sachs ESG Portfolio -> GS Asset Management Holdings B.V. 3-hop example launcher chip
+      $("#gs-3hop-example-btn").on("click", function() {
+        const sLei = "04N6BH2GW8URDY0AK302";
+        const sName = "GOLDMAN SACHS US EQUITY ESG PORTFOLIO";
+        const tLei = "549300N0HHGLT70MM602";
+        const tName = "Goldman Sachs Asset Management Holdings B.V.";
+
+        $("#rel-source-input").data("lei", sLei).val(sName);
+        $("#rel-target-input").data("lei", tLei).val(tName);
+
+        if (currentView !== 'relationship') {
+          switchViewMode('relationship');
+        }
+        loadShortestPath(sLei, tLei);
+      });
+
+      // PE Capital XI -> Columbus Global Fund 2-hop reference launcher chip
       $("#pe-columbus-example-btn").on("click", function() {
         const sLei = "529900EGRFQDZFSHYN17";
         const sName = "PE Capital XI";
@@ -1151,9 +1175,17 @@
       // Recenter button in inspector
       $("#recenter-node-btn").on("click", function() {
         const lei = $(this).data("lei");
+        const name = $(this).data("name");
         if (lei) {
           activeLEI = lei;
-          triggerActiveViewQuery(activeLEI);
+          if (name) {
+            $("#entity-search").val(name);
+          }
+          if (currentView === 'relationship') {
+            switchViewMode('explorer');
+          } else {
+            triggerActiveViewQuery(activeLEI);
+          }
         }
       });
 
@@ -1181,17 +1213,7 @@
       });
       $("#reset-fit-btn").on("click", resetFitView);
 
-      // Re-use top entity-search box for Page Rank filtering when typing
-      let prTopSearchTimeout = null;
-      $("#entity-search").on("input", function() {
-        if (currentView === 'pagerank') {
-          clearTimeout(prTopSearchTimeout);
-          const val = $(this).val();
-          prTopSearchTimeout = setTimeout(() => {
-            loadPageRankLeaderboard(val);
-          }, 250);
-        }
-      });
+      // Page Rank query execution is strictly triggered via Filter PageRank button to eliminate unnecessary query load
 
       updateInspectorButtonText();
       // Initial graph load omitted - waiting for user type-ahead lookup or action
@@ -1325,7 +1347,8 @@
         $("#hop-selector").hide();
         $("#leaf-cap-control").hide();
         $("#run-query-btn").html('<i class="fa-solid fa-magnifying-glass me-1"></i> Filter PageRank');
-        loadPageRankLeaderboard($("#entity-search").val() || "");
+        $("#entity-search").val(""); // Clear search input so initial view loads top 20 highest PageRank entities DESC
+        loadPageRankLeaderboard("", 20);
       } else if (view === 'relationship') {
         $("#graph-workspace").css("display", "flex");
         $("#pagerank-view").hide();
@@ -1365,7 +1388,7 @@
           $("#rel-pathway-storyboard").html(`
             <div class="small text-muted p-2">
               <i class="fa-solid fa-circle-info text-info me-1"></i>
-              Grayed-out hints display starting entities (<b>PE Capital XI</b> → <b>Columbus Global Fund</b>). Click the example card above or enter custom entities, then click <b>Find Path</b> to execute Spanner GQL <code>ANY SHORTEST</code>.
+              Click the verified 3-hop example card on the left or enter custom entities in the fields above, then click <b>Find Path</b> to execute Spanner GQL <code>ANY SHORTEST</code>.
             </div>
           `);
         }
@@ -1627,9 +1650,13 @@
     /**
      * Load Global PageRank Leaderboard from backend API /api/pagerank
      */
-    function loadPageRankLeaderboard(search) {
-      $.getJSON(`/api/pagerank?limit=50&search=${encodeURIComponent(search || '')}`)
+    function loadPageRankLeaderboard(search, limit) {
+      limit = limit || 20;
+      $("#loading-spinner").css("display", "flex");
+
+      $.getJSON(`/api/pagerank?limit=${limit}&search=${encodeURIComponent(search || '')}`)
         .done(function(data) {
+          $("#loading-spinner").hide();
           const summary = data.summary || {};
           const leaderboard = data.leaderboard || [];
 
@@ -1694,7 +1721,11 @@
           });
         })
         .fail(function(err) {
+          $("#loading-spinner").hide();
           console.error("Error loading PageRank leaderboard:", err);
+        })
+        .always(function() {
+          $("#loading-spinner").hide();
         });
     }
 
@@ -1987,7 +2018,7 @@
       badge.addClass("badge-hop-" + (node.hop || 0));
       badge.text(node.hop === 0 ? "Seed Node (Hop 0)" : `Connected (Hop ${node.hop})`);
 
-      $("#recenter-node-btn").data("lei", node.lei || node.id);
+      $("#recenter-node-btn").data("lei", node.lei || node.id).data("name", node.name || node.id);
       updateInspectorButtonText();
     }
   </script>

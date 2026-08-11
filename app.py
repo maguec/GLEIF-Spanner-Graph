@@ -556,7 +556,7 @@ def query_community_graph(seed_lei: str, max_hops: int = 1, limit: int = 150):
         }
 
 
-def query_pagerank_leaderboard(limit: int = 50, search: str = ""):
+def query_pagerank_leaderboard(limit: int = 20, search: str = ""):
     """
     Queries EntityGraphAnalytics joined with Entities ordered by precomputed PageRankScore DESC.
     """
@@ -880,7 +880,7 @@ def community_api():
 
 @app.route("/api/pagerank")
 def pagerank_api():
-    limit = int(request.args.get("limit", 50))
+    limit = int(request.args.get("limit", 20))
     search = request.args.get("search", "").strip()
     pagerank_data = query_pagerank_leaderboard(limit=limit, search=search)
     return jsonify(pagerank_data)

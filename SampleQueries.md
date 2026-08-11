@@ -408,7 +408,7 @@ LIMIT 50;
 Powers the **Page Rank** tab leaderboard inside the LEI Graph Explorer web application. Lists top legal entities ordered by precomputed degree and link-structure centrality (`PageRankScore`), joined with entity master profile data and community cluster ID assignments.
 
 ### How It Works
-Queries `EntityGraphAnalytics` joined directly with `Entities` without `@param` markers so it can be copied straight into **Cloud Spanner Studio** and run immediately. Returns the top 50 network hubs (e.g. Custody Bank of Japan, Master Trust Bank of Japan, BlackRock Asset Management, UBS, Union Investment, etc.).
+Queries `EntityGraphAnalytics` joined directly with `Entities` without `@param` markers so it can be copied straight into **Cloud Spanner Studio** and run immediately. Returns the top 20 network hubs (e.g. Custody Bank of Japan, Master Trust Bank of Japan, BlackRock Asset Management, UBS, Union Investment, etc.).
 
 ```sql
 SELECT 
@@ -423,7 +423,7 @@ SELECT
 FROM EntityGraphAnalytics AS a
 JOIN Entities AS e ON a.LEI = e.LEI
 ORDER BY a.PageRankScore DESC
-LIMIT 50;
+LIMIT 20;
 ```
 
 ---
@@ -529,13 +529,10 @@ LIMIT 50;
 
 ---
 
-## Query 14: Web App Spanner `ANY SHORTEST` Shortest Relationship Path Query (`Show Relationship` Tab Query)
+## Query 14: Web App Spanner `ANY SHORTEST` 2-Hop Relationship Path Query (PE Capital XI Reference Sample)
 
 ### Business Scenario
-Powers the **Show Relationship** tab inside the web application. Given a Source Entity (**PE Capital XI** `529900EGRFQDZFSHYN17`) and a Target Entity (**Columbus Global Fund** `529900MHMTMUTJWK3E84`), executes Cloud Spanner's native `ANY SHORTEST` GQL path pattern matching to retrieve the exact intermediate connecting entities and relationships along the shortest pathway.
-
-### How It Works
-Invokes `MATCH ANY SHORTEST (src:Entity)-[r1:IS_RELATED_TO]->(mid:Entity)<-[r2:IS_RELATED_TO]-(tgt:Entity)` inside `GRAPH_TABLE` against `LEIGraph` to discover connecting entities such as **IFM INDEPENDENT FUND MANAGEMENT AKTIENGESELLSCHAFT** (`529900R8C5JSAWC1EW32`) linking PE Capital XI to Columbus Global Fund.
+Powers the **Show Relationship** tab reference example inside the web application. Given a Source Entity (**PE Capital XI** `529900EGRFQDZFSHYN17`) and a Target Entity (**Columbus Global Fund** `529900MHMTMUTJWK3E84`), executes Cloud Spanner's native `ANY SHORTEST` GQL path pattern matching to discover the connecting intermediary entity.
 
 ```sql
 SELECT 
@@ -561,6 +558,53 @@ FROM GRAPH_TABLE(
         tgt.LegalName AS target_name,
         r1.RelationshipType AS rel1_type,
         r2.RelationshipType AS rel2_type
+    )
+) AS g;
+```
+
+---
+
+## Query 15: Web App Spanner `ANY SHORTEST` 3-Hop Relationship Path Query (Verified 3-Hop Sample)
+
+### Business Scenario
+Powers the **Show Relationship** tab 3-hop example inside the web application. Given a Source Entity (**GOLDMAN SACHS US EQUITY ESG PORTFOLIO** `04N6BH2GW8URDY0AK302`) and a Target Entity (**Goldman Sachs Asset Management Holdings B.V.** `549300N0HHGLT70MM602`), executes Cloud Spanner's native `ANY SHORTEST` GQL path pattern matching to discover the exact multi-hop connecting path requiring 3 hops across institutional holding and management intermediaries.
+
+### Verified 3-Hop Pathway sequence:
+1. **Source Entity**: `GOLDMAN SACHS US EQUITY ESG PORTFOLIO` (`04N6BH2GW8URDY0AK302`)
+2. **Hop 1 Intermediate**: `Goldman Sachs Asset Management B.V.` (`54930031LV6Z8OHO6762`)
+3. **Hop 2 Intermediate**: `Goldman Sachs Asset Management International Holdings B.V.` (`5493001QST0I7Z235S79`)
+4. **Hop 3 Target Entity**: `Goldman Sachs Asset Management Holdings B.V.` (`549300N0HHGLT70MM602`)
+
+```sql
+SELECT 
+    g.source_lei,
+    g.source_name,
+    g.mid1_lei,
+    g.mid1_name,
+    g.mid2_lei,
+    g.mid2_name,
+    g.target_lei,
+    g.target_name,
+    g.rel1_type,
+    g.rel2_type,
+    g.rel3_type
+FROM GRAPH_TABLE(
+    LEIGraph
+    MATCH ANY SHORTEST (src:Entity)-[r1:IS_RELATED_TO]->(mid1:Entity)-[r2:IS_RELATED_TO]->(mid2:Entity)-[r3:IS_RELATED_TO]->(tgt:Entity)
+    WHERE src.LEI = '04N6BH2GW8URDY0AK302'       -- Source: GOLDMAN SACHS US EQUITY ESG PORTFOLIO
+      AND tgt.LEI = '549300N0HHGLT70MM602'       -- Target: Goldman Sachs Asset Management Holdings B.V.
+    COLUMNS (
+        src.LEI AS source_lei,
+        src.LegalName AS source_name,
+        mid1.LEI AS mid1_lei,
+        mid1.LegalName AS mid1_name,
+        mid2.LEI AS mid2_lei,
+        mid2.LegalName AS mid2_name,
+        tgt.LEI AS target_lei,
+        tgt.LegalName AS target_name,
+        r1.RelationshipType AS rel1_type,
+        r2.RelationshipType AS rel2_type,
+        r3.RelationshipType AS rel3_type
     )
 ) AS g;
 ```
