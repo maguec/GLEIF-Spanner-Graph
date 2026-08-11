@@ -159,6 +159,112 @@
       color: #fff;
     }
 
+    /* Top View Navigation Tabs */
+    .nav-tabs-bar {
+      display: flex;
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 3px;
+      gap: 3px;
+      margin-right: 6px;
+    }
+
+    .nav-tab {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .nav-tab:hover {
+      color: #fff;
+    }
+
+    .nav-tab.active {
+      background: #0284c7;
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(2, 132, 199, 0.4);
+    }
+
+    /* PageRank Leaderboard Dashboard Panel */
+    .pagerank-view {
+      flex-grow: 1;
+      height: calc(100vh - 64px);
+      overflow-y: auto;
+      background: #0f172a;
+      padding: 24px;
+      display: none;
+    }
+
+    .pr-kpi-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 16px 20px;
+      height: 100%;
+    }
+
+    .pr-table-container {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-top: 20px;
+    }
+
+    .pr-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+
+    .pr-table th {
+      background: var(--bg-card);
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.73rem;
+      letter-spacing: 0.05em;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+      text-align: left;
+    }
+
+    .pr-table td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+      vertical-align: middle;
+    }
+
+    .pr-table tr:hover {
+      background: rgba(56, 189, 248, 0.05);
+    }
+
+    .community-member-chip {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .community-member-chip:hover {
+      border-color: #a855f7;
+      background: rgba(168, 85, 247, 0.15);
+    }
+
     /* Max Leaf Cap Control */
     .leaf-cap-control {
       display: flex;
@@ -405,7 +511,20 @@
   <header class="top-bar">
     <div class="brand-title">
       <i class="fa-solid fa-diagram-project text-info"></i>
-      <span>LEI Graph 3-Hop Explorer</span>
+      <span>LEI Graph Explorer</span>
+    </div>
+
+    <!-- View Switcher Tabs -->
+    <div class="nav-tabs-bar" id="view-tabs">
+      <button class="nav-tab active" data-view="explorer">
+        <i class="fa-solid fa-diagram-project"></i> Explorer
+      </button>
+      <button class="nav-tab" data-view="community">
+        <i class="fa-solid fa-users-gear"></i> Community
+      </button>
+      <button class="nav-tab" data-view="pagerank">
+        <i class="fa-solid fa-trophy"></i> Page Rank
+      </button>
     </div>
 
     <!-- Type-Ahead Autocomplete Input -->
@@ -424,7 +543,7 @@
     </div>
 
     <!-- Max Leaf Children Control (Left of Traverse button) -->
-    <div class="leaf-cap-control" title="Maximum leaf children (nodes with no further branch children) per parent node. Non-leaf branch nodes are never filtered.">
+    <div class="leaf-cap-control" id="leaf-cap-control" title="Maximum leaf children (nodes with no further branch children) per parent node. Non-leaf branch nodes are never filtered.">
       <span class="leaf-cap-label">Max Leaves:</span>
       <input type="number" id="max-leaf-cap" class="leaf-cap-input" value="25" min="1" max="500">
     </div>
@@ -435,7 +554,7 @@
   </header>
 
   <!-- Split View Workspace -->
-  <div class="main-workspace">
+  <div class="main-workspace" id="graph-workspace">
 
     <!-- Left Sidebar: Controls & Inspector -->
     <aside class="sidebar">
@@ -474,7 +593,7 @@
       <!-- Graph Statistics -->
       <div class="sidebar-section">
         <div class="section-title">
-          <span>Traversal Summary</span>
+          <span id="stats-title">Traversal Summary</span>
           <span id="stats-hops" class="badge bg-secondary">2 Hops</span>
         </div>
         <div class="row text-center g-2">
@@ -489,6 +608,24 @@
               <div id="stat-links" class="h5 mb-0 text-warning fw-bold">0</div>
               <div class="small text-muted">Relationships</div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Community Cluster Analytics (Visible in Community Mode) -->
+      <div class="sidebar-section" id="community-cluster-section" style="display: none;">
+        <div class="section-title">
+          <span>Community Cluster</span>
+          <i class="fa-solid fa-users-gear text-purple"></i>
+        </div>
+        <div class="node-detail-card mb-2">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span id="comm-id-badge" class="badge bg-purple" style="background:#a855f7;">Community #--</span>
+            <span id="comm-pr-badge" class="badge bg-dark border border-info text-info">PageRank: --</span>
+          </div>
+          <div class="small text-muted mb-2">Precomputed EntityGraphAnalytics cluster members sharing structural overlap:</div>
+          <div id="community-members-list" style="max-height: 190px; overflow-y: auto;">
+            <div class="small text-muted">Select or search an entity to inspect overlapping community cluster members.</div>
           </div>
         </div>
       </div>
@@ -594,8 +731,65 @@
     </main>
   </div>
 
+  <!-- PageRank Leaderboard & Network Centrality View -->
+  <div class="pagerank-view" id="pagerank-view">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <div>
+        <h3 class="fw-bold text-white mb-1"><i class="fa-solid fa-trophy text-warning me-2"></i> Global Network PageRank Centrality</h3>
+        <p class="text-muted mb-0 small">Precomputed graph analytics from <code>EntityGraphAnalytics</code> cataloging network centrality and community clustering. Type in top search bar to filter.</p>
+      </div>
+    </div>
+
+    <!-- Summary KPI Cards -->
+    <div class="row g-3 mb-4">
+      <div class="col-md-4">
+        <div class="pr-kpi-card">
+          <div class="small text-muted text-uppercase fw-bold">Top Central Network Entity</div>
+          <div id="pr-top-entity-name" class="h6 text-info fw-bold my-1 text-truncate">Loading...</div>
+          <div id="pr-top-score" class="small text-warning fw-mono">Score: --</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="pr-kpi-card">
+          <div class="small text-muted text-uppercase fw-bold">Ranked Graph Entities</div>
+          <div id="pr-total-entities" class="h3 text-white fw-bold my-1">1,565,027</div>
+          <div class="small text-muted">Cloud Spanner analytical index</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="pr-kpi-card">
+          <div class="small text-muted text-uppercase fw-bold">Distinct Graph Communities</div>
+          <div id="pr-total-communities" class="h3 text-purple fw-bold my-1" style="color: #a855f7;">1,407,488</div>
+          <div class="small text-muted">Connected community sub-clusters</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PageRank Leaderboard Table -->
+    <div class="pr-table-container">
+      <table class="pr-table">
+        <thead>
+          <tr>
+            <th style="width: 70px;">Rank</th>
+            <th>Legal Entity Name & LEI</th>
+            <th>PageRank Score</th>
+            <th>Community ID</th>
+            <th>Category & Jurisdiction</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="pr-leaderboard-body">
+          <tr>
+            <td colspan="6" class="text-center text-muted py-4">Loading PageRank leaderboard from Cloud Spanner...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- JavaScript Application Logic -->
   <script>
+    let currentView = 'explorer';
     let activeLEI = '001GPB6A9XPE8XJICC14';
     let currentHops = 2;
     let graphSimulation = null;
@@ -611,6 +805,12 @@
 
     $(document).ready(function() {
 
+      // View Mode Navigation Tabs Switcher
+      $("#view-tabs .nav-tab").on("click", function() {
+        const view = $(this).data("view");
+        switchViewMode(view);
+      });
+
       // Setup Type-Ahead Autocomplete connected to /autocomplete
       $("#entity-search").autocomplete({
         source: function(request, response) {
@@ -622,7 +822,7 @@
         select: function(event, ui) {
           activeLEI = ui.item.id;
           $("#entity-search").val(ui.item.value);
-          loadGraph(activeLEI, currentHops);
+          triggerActiveViewQuery(activeLEI);
           return false;
         }
       }).autocomplete("instance")._renderItem = function(ul, item) {
@@ -641,7 +841,7 @@
         currentHops = parseInt($(this).data("hops"));
         $("#stats-hops").text(currentHops + " Hops");
         updateInspectorButtonText();
-        loadGraph(activeLEI, currentHops);
+        triggerActiveViewQuery(activeLEI);
       });
 
       // Quick Example chips click
@@ -650,12 +850,12 @@
         const name = $(this).data("name");
         activeLEI = lei;
         $("#entity-search").val(name);
-        loadGraph(lei, currentHops);
+        triggerActiveViewQuery(activeLEI);
       });
 
       // Traverse button click
       $("#run-query-btn").on("click", function() {
-        loadGraph(activeLEI, currentHops);
+        triggerActiveViewQuery(activeLEI);
       });
 
       // Recenter button in inspector
@@ -663,7 +863,7 @@
         const lei = $(this).data("lei");
         if (lei) {
           activeLEI = lei;
-          loadGraph(lei, currentHops);
+          triggerActiveViewQuery(activeLEI);
         }
       });
 
@@ -690,6 +890,18 @@
         d3.select("#d3-canvas").transition().duration(300).call(zoomBehavior.scaleBy, 0.8);
       });
       $("#reset-fit-btn").on("click", resetFitView);
+
+      // Re-use top entity-search box for Page Rank filtering when typing
+      let prTopSearchTimeout = null;
+      $("#entity-search").on("input", function() {
+        if (currentView === 'pagerank') {
+          clearTimeout(prTopSearchTimeout);
+          const val = $(this).val();
+          prTopSearchTimeout = setTimeout(() => {
+            loadPageRankLeaderboard(val);
+          }, 250);
+        }
+      });
 
       updateInspectorButtonText();
       // Initial graph load omitted - waiting for user type-ahead lookup or action
@@ -740,6 +952,225 @@
       });
 
       return { nodes: filteredNodes, links: filteredLinks };
+    }
+
+    /**
+     * View Switcher Handler (Explorer | Community | Page Rank)
+     */
+    function switchViewMode(view) {
+      currentView = view;
+      $("#view-tabs .nav-tab").removeClass("active");
+      $(`#view-tabs .nav-tab[data-view="${view}"]`).addClass("active");
+
+      if (view === 'explorer') {
+        $("#graph-workspace").css("display", "flex");
+        $("#pagerank-view").hide();
+        $("#community-cluster-section").hide();
+        $("#leaf-cap-control").show();
+        $("#stats-title").text("Traversal Summary");
+        $("#run-query-btn").html('<i class="fa-solid fa-play me-1"></i> Traverse');
+
+        // Restore legend for explorer
+        $(".legend-box").html(`
+          <div class="section-title mb-2">Hop Distance Legend</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span><span>Seed Lookup Entity (Hop 0)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #38bdf8;"></span><span>1-Hop Connected Entity</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #34d399;"></span><span>2-Hop Connected Entity</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>3-Hop Connected Entity</span></div>
+        `);
+
+        // Restore explorer default hop = 2 if switching back
+        currentHops = 2;
+        $("#hop-selector .hop-btn").removeClass("active");
+        $("#hop-selector .hop-btn[data-hops='2']").addClass("active");
+        $("#stats-hops").text("2 Hops");
+
+        loadGraph(activeLEI, currentHops);
+      } else if (view === 'community') {
+        $("#graph-workspace").css("display", "flex");
+        $("#pagerank-view").hide();
+        $("#community-cluster-section").show();
+        $("#leaf-cap-control").hide();
+        $("#stats-title").text("Community Summary");
+        $("#run-query-btn").html('<i class="fa-solid fa-users-gear me-1"></i> Analyze Cluster');
+
+        // Customize legend for Community starting nodes and multi-hop outward graph
+        $(".legend-box").html(`
+          <div class="section-title mb-2">Community Cluster Legend</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>Community Cluster Starting Member</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span><span>Selected Entity</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #38bdf8;"></span><span>1-Hop Outward Connected</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #34d399;"></span><span>2-Hop Outward Connected</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>3-Hop Outward Connected</span></div>
+        `);
+
+        // Per user spec: default to 1 hop outward from community cluster, toggleable to 2 or 3 hops
+        currentHops = 1;
+        $("#hop-selector .hop-btn").removeClass("active");
+        $("#hop-selector .hop-btn[data-hops='1']").addClass("active");
+        $("#stats-hops").text("1 Hop");
+
+        loadCommunity(activeLEI, currentHops);
+      } else if (view === 'pagerank') {
+        $("#graph-workspace").hide();
+        $("#pagerank-view").show();
+        $("#leaf-cap-control").hide();
+        $("#run-query-btn").html('<i class="fa-solid fa-magnifying-glass me-1"></i> Filter PageRank');
+        loadPageRankLeaderboard($("#entity-search").val() || "");
+      }
+    }
+
+    function triggerActiveViewQuery(lei) {
+      if (currentView === 'explorer') {
+        loadGraph(lei, currentHops);
+      } else if (currentView === 'community') {
+        loadCommunity(lei, currentHops);
+      } else if (currentView === 'pagerank') {
+        loadPageRankLeaderboard($("#entity-search").val() || lei);
+      }
+    }
+
+    /**
+     * Load Community Overlap Analysis from backend API /api/community
+     * Performs a 1 or 2 hop query (defaulting to 1 hop) looking up LEI in EntityGraphAnalytics
+     */
+    function loadCommunity(lei, hops) {
+      $("#loading-spinner").css("display", "flex");
+
+      $.getJSON(`/api/community?lei=${encodeURIComponent(lei)}&hops=${hops}&limit=150`)
+        .done(function(data) {
+          $("#loading-spinner").hide();
+          try {
+            lastLoadedGraphData = data;
+            const comm = data.community || {};
+            const commId = comm.communityId !== undefined ? comm.communityId : -1;
+            const prScore = comm.pageRankScore ? comm.pageRankScore.toFixed(6) : '--';
+
+            $("#comm-id-badge").text(commId !== -1 ? `Community #${commId}` : 'No Cluster Assigned');
+            $("#comm-pr-badge").text(`PageRank: ${prScore}`);
+
+            $("#stat-nodes").text(data.stats?.nodeCount || 0);
+            $("#stat-links").text(data.stats?.linkCount || 0);
+
+            // Populate overlapping community members roster
+            const members = comm.members || [];
+            const listEl = $("#community-members-list");
+            listEl.empty();
+
+            if (members.length === 0) {
+              listEl.html('<div class="small text-muted">No precomputed overlapping community cluster members found.</div>');
+            } else {
+              members.slice(0, 15).forEach(m => {
+                const isCurrent = (m.lei === lei);
+                const chip = $(`
+                  <div class="community-member-chip ${isCurrent ? 'border-primary' : ''}">
+                    <div class="d-flex justify-content-between align-items-center">
+                      <span class="fw-semibold small text-truncate" style="max-width: 175px;" title="${m.name}">${m.name}</span>
+                      <span class="badge bg-dark text-info ms-1">${(m.pageRankScore || 0).toFixed(5)}</span>
+                    </div>
+                    <div class="lei-code ms-0 mt-1 d-inline-block">${m.lei}</div>
+                  </div>
+                `);
+                chip.on("click", function() {
+                  activeLEI = m.lei;
+                  $("#entity-search").val(m.name);
+                  loadCommunity(m.lei, currentHops);
+                });
+                listEl.append(chip);
+              });
+            }
+
+            if (data.seed) {
+              displayNodeInInspector(data.seed);
+            }
+
+            renderD3Graph(data.nodes || [], data.links || []);
+          } catch (e) {
+            console.error("Error rendering community graph:", e);
+            alert("Error rendering community graph: " + e.message);
+          }
+        })
+        .fail(function(err) {
+          $("#loading-spinner").hide();
+          alert("Error loading community analysis: " + (err.responseJSON?.error || err.statusText));
+        })
+        .always(function() {
+          $("#loading-spinner").hide();
+        });
+    }
+
+    /**
+     * Load Global PageRank Leaderboard from backend API /api/pagerank
+     */
+    function loadPageRankLeaderboard(search) {
+      $.getJSON(`/api/pagerank?limit=50&search=${encodeURIComponent(search || '')}`)
+        .done(function(data) {
+          const summary = data.summary || {};
+          const leaderboard = data.leaderboard || [];
+
+          if (leaderboard.length > 0) {
+            $("#pr-top-entity-name").text(leaderboard[0].name || leaderboard[0].lei);
+            $("#pr-top-score").text(`PageRank Score: ${leaderboard[0].pageRankScore.toFixed(8)}`);
+          }
+
+          $("#pr-total-entities").text((summary.totalRankedEntities || 0).toLocaleString());
+          $("#pr-total-communities").text((summary.totalCommunities || 0).toLocaleString());
+
+          const tbody = $("#pr-leaderboard-body");
+          tbody.empty();
+
+          if (leaderboard.length === 0) {
+            tbody.html('<tr><td colspan="6" class="text-center text-muted py-4">No entities found matching your search.</td></tr>');
+            return;
+          }
+
+          leaderboard.forEach(item => {
+            const row = $(`
+              <tr>
+                <td><span class="badge ${item.rank <= 3 ? 'bg-warning text-dark' : 'bg-secondary'} fw-bold">#${item.rank}</span></td>
+                <td>
+                  <div class="fw-semibold text-white">${item.name}</div>
+                  <div class="lei-code ms-0 mt-1 d-inline-block">${item.lei}</div>
+                </td>
+                <td><code class="text-info fw-bold">${item.pageRankScore.toFixed(8)}</code></td>
+                <td>
+                  <span class="badge bg-purple" style="background:#a855f7; cursor:pointer;" title="Click to view Community Cluster">
+                    Community #${item.communityId}
+                  </span>
+                </td>
+                <td>
+                  <span class="badge bg-dark border border-secondary text-light">${item.category}</span>
+                  <span class="small text-muted ms-1">${item.jurisdiction}</span>
+                </td>
+                <td style="text-align: right;">
+                  <button class="btn btn-outline-info btn-sm me-1 open-explorer-btn" data-lei="${item.lei}" data-name="${item.name}">
+                    <i class="fa-solid fa-diagram-project"></i> Explorer
+                  </button>
+                  <button class="btn btn-outline-purple btn-sm open-community-btn" style="border-color:#a855f7; color:#a855f7;" data-lei="${item.lei}" data-name="${item.name}">
+                    <i class="fa-solid fa-users-gear"></i> Community
+                  </button>
+                </td>
+              </tr>
+            `);
+
+            row.find(".open-explorer-btn").on("click", function() {
+              activeLEI = item.lei;
+              $("#entity-search").val(item.name);
+              switchViewMode('explorer');
+            });
+
+            row.find(".open-community-btn, span[title*='Community Cluster']").on("click", function() {
+              activeLEI = item.lei;
+              $("#entity-search").val(item.name);
+              switchViewMode('community');
+            });
+
+            tbody.append(row);
+          });
+        })
+        .fail(function(err) {
+          console.error("Error loading PageRank leaderboard:", err);
+        });
     }
 
     /**
@@ -896,10 +1327,19 @@
         .attr("stroke-width", 2)
         .attr("stroke-dasharray", "4,2");
 
+      // Outer ring for community cluster starting nodes
+      node.filter(d => d.isCommunityMember && !d.isSeed)
+        .append("circle")
+        .attr("r", 16)
+        .attr("fill", "none")
+        .attr("stroke", "#a855f7")
+        .attr("stroke-width", 1.8)
+        .attr("stroke-dasharray", "3,2");
+
       // Node circle
       node.append("circle")
         .attr("r", d => d.isSeed ? 14 : Math.max(9, 13 - d.hop * 1.5))
-        .attr("fill", d => hopColors[d.hop] || "#94a3b8")
+        .attr("fill", d => (currentView === 'community' && d.isCommunityMember) ? '#a855f7' : (hopColors[d.hop] || "#94a3b8"))
         .attr("stroke", "#0f172a")
         .attr("stroke-width", 2);
 

@@ -271,6 +271,311 @@ def graph_api():
     return jsonify(graph_data)
 
 
+def query_community_graph(seed_lei: str, max_hops: int = 1, limit: int = 150):
+    """
+    Looks up LEI in EntityGraphAnalytics to find its precomputed CommunityId and PageRankScore,
+    initializes EVERY member of that community as starting nodes, and performs a 1, 2, or 3 hop
+    graph expansion outward across EntityRelationships.
+    """
+    max_hops = max(1, min(int(max_hops), 3))
+    seed_lei = seed_lei.strip()
+
+    with get_database().snapshot(multi_use=True) as snapshot:
+        # 1. Inspect EntityGraphAnalytics for seed entity
+        q_analytics = """
+        SELECT a.LEI, a.PageRankScore, a.CommunityId, a.JaccardCommunityId,
+               e.LegalName, e.EntityCategory, e.LegalJurisdiction, e.EntityStatus, e.RegistrationStatus
+        FROM Entities e
+        LEFT JOIN EntityGraphAnalytics a ON e.LEI = a.LEI
+        WHERE e.LEI = @lei
+        LIMIT 1
+        """
+        seed_rows = list(snapshot.execute_sql(
+            q_analytics,
+            params={"lei": seed_lei},
+            param_types={"lei": spanner.param_types.STRING}
+        ))
+
+        if not seed_rows:
+            return {
+                "error": f"Entity {seed_lei} not found",
+                "nodes": [],
+                "links": [],
+                "stats": {"nodeCount": 0, "linkCount": 0}
+            }
+
+        r = seed_rows[0]
+        pr_score = r[1] or 0.0
+        comm_id = r[2] if r[2] is not None else -1
+        jaccard_id = r[3] if r[3] is not None else -1
+
+        seed_node = {
+            "id": seed_lei,
+            "lei": seed_lei,
+            "name": r[4] or seed_lei,
+            "category": r[5] or "ENTITY",
+            "jurisdiction": r[6] or "N/A",
+            "status": r[7] or "ACTIVE",
+            "regStatus": r[8] or "N/A",
+            "hop": 0,
+            "isSeed": True,
+            "pageRankScore": pr_score,
+            "communityId": comm_id,
+        }
+
+        # 2. Get overlapping members sharing the same CommunityId in EntityGraphAnalytics
+        community_members = []
+        member_leis = set()
+        member_leis.add(seed_lei)
+        nodes_dict = {}
+
+        # Place seed entity in starting nodes
+        nodes_dict[seed_lei] = seed_node
+
+        if comm_id != -1:
+            q_comm = """
+            SELECT a.LEI, a.PageRankScore, e.LegalName, e.EntityCategory, e.LegalJurisdiction, e.EntityStatus, e.RegistrationStatus
+            FROM EntityGraphAnalytics a
+            JOIN Entities e ON a.LEI = e.LEI
+            WHERE a.CommunityId = @comm_id
+            ORDER BY a.PageRankScore DESC
+            LIMIT @limit
+            """
+            comm_rows = list(snapshot.execute_sql(
+                q_comm,
+                params={"comm_id": comm_id, "limit": limit},
+                param_types={
+                    "comm_id": spanner.param_types.INT64,
+                    "limit": spanner.param_types.INT64
+                }
+            ))
+            for crow in comm_rows:
+                c_lei = crow[0]
+                member_leis.add(c_lei)
+                community_members.append({
+                    "lei": c_lei,
+                    "name": crow[2] or c_lei,
+                    "pageRankScore": crow[1] or 0.0,
+                    "category": crow[3] or "ENTITY",
+                    "jurisdiction": crow[4] or "N/A"
+                })
+
+                # EVERY member of the community is a starting node in the Community view!
+                if c_lei not in nodes_dict:
+                    nodes_dict[c_lei] = {
+                        "id": c_lei,
+                        "lei": c_lei,
+                        "name": crow[2] or c_lei,
+                        "category": crow[3] or "ENTITY",
+                        "jurisdiction": crow[4] or "N/A",
+                        "status": crow[5] or "ACTIVE",
+                        "regStatus": crow[6] or "ISSUED",
+                        "hop": 0,
+                        "isSeed": (c_lei == seed_lei),
+                        "isCommunityMember": True,
+                        "pageRankScore": crow[1] or 0.0,
+                        "communityId": comm_id
+                    }
+                else:
+                    nodes_dict[c_lei]["isCommunityMember"] = True
+                    nodes_dict[c_lei]["pageRankScore"] = crow[1] or 0.0
+                    nodes_dict[c_lei]["communityId"] = comm_id
+
+        # 3. BFS expansion up to 1, 2, or 3 hops outward starting from ALL community members!
+        visited = set(nodes_dict.keys())
+        frontier = list(visited)
+        links = []
+        seen_links = set()
+        missing_leis = set()
+
+        q_out = """
+        SELECT LEI, EndLEI, RelationshipType, RelationshipStatus
+        FROM EntityRelationships
+        WHERE LEI IN UNNEST(@frontiers)
+        LIMIT @limit
+        """
+        q_in = """
+        SELECT LEI, EndLEI, RelationshipType, RelationshipStatus
+        FROM EntityRelationships
+        WHERE EndLEI IN UNNEST(@frontiers)
+        LIMIT @limit
+        """
+
+        for current_hop in range(1, max_hops + 1):
+            if not frontier or len(nodes_dict) >= limit:
+                break
+
+            params = {"frontiers": frontier, "limit": limit}
+            ptypes = {
+                "frontiers": spanner.param_types.Array(spanner.param_types.STRING),
+                "limit": spanner.param_types.INT64
+            }
+
+            rows_out = list(snapshot.execute_sql(q_out, params=params, param_types=ptypes))
+            rows_in = list(snapshot.execute_sql(q_in, params=params, param_types=ptypes))
+
+            next_frontier = set()
+            for src, tgt, rel_type, rel_st in rows_out + rows_in:
+                rel_type = rel_type or "IS_RELATED_TO"
+                rel_st = rel_st or "ACTIVE"
+                pair_key = (src, tgt, rel_type)
+
+                if pair_key not in seen_links:
+                    seen_links.add(pair_key)
+                    links.append({
+                        "source": src,
+                        "target": tgt,
+                        "type": rel_type,
+                        "status": rel_st
+                    })
+
+                for nid in (src, tgt):
+                    if nid not in visited and len(nodes_dict) < limit:
+                        visited.add(nid)
+                        next_frontier.add(nid)
+                        missing_leis.add(nid)
+                        nodes_dict[nid] = {
+                            "id": nid,
+                            "lei": nid,
+                            "name": nid,
+                            "category": "ENTITY",
+                            "jurisdiction": "N/A",
+                            "status": "ACTIVE",
+                            "regStatus": "ISSUED",
+                            "hop": current_hop,
+                            "isSeed": False,
+                            "isCommunityMember": (nid in member_leis)
+                        }
+
+            frontier = list(next_frontier)
+
+        # 4. Fetch entity metadata for external non-community neighbors discovered during expansion
+        if missing_leis:
+            q_meta = """
+            SELECT LEI, LegalName, EntityCategory, LegalJurisdiction, EntityStatus, RegistrationStatus
+            FROM Entities
+            WHERE LEI IN UNNEST(@leis)
+            """
+            meta_rows = snapshot.execute_sql(
+                q_meta,
+                params={"leis": list(missing_leis)},
+                param_types={"leis": spanner.param_types.Array(spanner.param_types.STRING)}
+            )
+            for mrow in meta_rows:
+                m_id = mrow[0]
+                if m_id in nodes_dict:
+                    nodes_dict[m_id]["name"] = mrow[1] or m_id
+                    nodes_dict[m_id]["category"] = mrow[2] or "ENTITY"
+                    nodes_dict[m_id]["jurisdiction"] = mrow[3] or "N/A"
+                    nodes_dict[m_id]["status"] = mrow[4] or "ACTIVE"
+                    nodes_dict[m_id]["regStatus"] = mrow[5] or "ISSUED"
+
+        return {
+            "seed": seed_node,
+            "community": {
+                "communityId": comm_id,
+                "jaccardCommunityId": jaccard_id,
+                "pageRankScore": pr_score,
+                "totalMembers": len(community_members),
+                "members": community_members
+            },
+            "nodes": list(nodes_dict.values()),
+            "links": links,
+            "stats": {
+                "nodeCount": len(nodes_dict),
+                "linkCount": len(links),
+                "maxHopsReached": max_hops,
+                "communityMemberCount": len(community_members)
+            }
+        }
+
+
+def query_pagerank_leaderboard(limit: int = 50, search: str = ""):
+    """
+    Queries EntityGraphAnalytics joined with Entities ordered by precomputed PageRankScore DESC.
+    """
+    limit = max(5, min(int(limit), 100))
+    search = search.strip()
+
+    with get_database().snapshot(multi_use=True) as snapshot:
+        # Get overall community analytics summary stats
+        q_stats = """
+        SELECT COUNT(a.LEI) as total_ranked,
+               COUNT(DISTINCT a.CommunityId) as total_communities,
+               MAX(a.PageRankScore) as max_pagerank
+        FROM EntityGraphAnalytics a
+        """
+        stats_row = list(snapshot.execute_sql(q_stats))[0]
+
+        if search:
+            q_leaderboard = """
+            SELECT a.LEI, a.PageRankScore, a.CommunityId, a.JaccardCommunityId,
+                   e.LegalName, e.EntityCategory, e.LegalJurisdiction, e.EntityStatus
+            FROM EntityGraphAnalytics a
+            JOIN Entities e ON a.LEI = e.LEI
+            WHERE UPPER(e.LegalName) LIKE @term OR UPPER(a.LEI) LIKE @term
+            ORDER BY a.PageRankScore DESC
+            LIMIT @limit
+            """
+            params = {"term": f"%{search.upper()}%", "limit": limit}
+            ptypes = {"term": spanner.param_types.STRING, "limit": spanner.param_types.INT64}
+        else:
+            q_leaderboard = """
+            SELECT a.LEI, a.PageRankScore, a.CommunityId, a.JaccardCommunityId,
+                   e.LegalName, e.EntityCategory, e.LegalJurisdiction, e.EntityStatus
+            FROM EntityGraphAnalytics a
+            JOIN Entities e ON a.LEI = e.LEI
+            ORDER BY a.PageRankScore DESC
+            LIMIT @limit
+            """
+            params = {"limit": limit}
+            ptypes = {"limit": spanner.param_types.INT64}
+
+        rows = snapshot.execute_sql(q_leaderboard, params=params, param_types=ptypes)
+        leaderboard = []
+        for idx, row in enumerate(rows, 1):
+            leaderboard.append({
+                "rank": idx,
+                "lei": row[0],
+                "pageRankScore": row[1] or 0.0,
+                "communityId": row[2] if row[2] is not None else -1,
+                "jaccardCommunityId": row[3] if row[3] is not None else -1,
+                "name": row[4] or row[0],
+                "category": row[5] or "ENTITY",
+                "jurisdiction": row[6] or "N/A",
+                "status": row[7] or "ACTIVE",
+            })
+
+        return {
+            "summary": {
+                "totalRankedEntities": stats_row[0] or 0,
+                "totalCommunities": stats_row[1] or 0,
+                "maxPageRankScore": stats_row[2] or 0.0
+            },
+            "leaderboard": leaderboard
+        }
+
+
+@app.route("/api/community")
+def community_api():
+    lei = request.args.get("lei", "").strip()
+    hops = int(request.args.get("hops", 1))  # Default to 1 hop per user specification
+    limit = int(request.args.get("limit", 150))
+    if not lei:
+        return jsonify({"error": "LEI parameter is required"}), 400
+
+    community_data = query_community_graph(lei, max_hops=hops, limit=limit)
+    return jsonify(community_data)
+
+
+@app.route("/api/pagerank")
+def pagerank_api():
+    limit = int(request.args.get("limit", 50))
+    search = request.args.get("search", "").strip()
+    pagerank_data = query_pagerank_leaderboard(limit=limit, search=search)
+    return jsonify(pagerank_data)
+
+
 @app.route("/v1/health")
 def health_check():
     try:
