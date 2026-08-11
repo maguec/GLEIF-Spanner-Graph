@@ -52,7 +52,11 @@ uv run load_relationships.py --file data/<RELATIONSHIP-RECORDS-FILENAME>
 
 ## Querying data
 
-All scripts are executed via `uv`:
+### Sample queries to run in Spanner Studio
+
+[Sample Queries.md](file://SampleQueries.md)
+
+### Sample scripts
 
 ```bash
 # Preview query and S2 token parameters:
