@@ -835,8 +835,8 @@
           .html(`<strong>${d.name}</strong><br>` +
                 `<span class="text-muted">Hop Distance:</span> <strong>${d.hop}</strong><br>` +
                 `<span class="text-muted">LEI:</span> ${d.lei}`)
-          .style("left", (event.pageX + 12) + "px")
-          .style("top", (event.pageY - 10) + "px")
+          .css("left", (event.pageX + 12) + "px")
+          .css("top", (event.pageY - 10) + "px")
           .show();
       })
       .on("mouseout", function() {
