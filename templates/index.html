@@ -159,6 +159,42 @@
       color: #fff;
     }
 
+    /* Max Leaf Cap Control */
+    .leaf-cap-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 0.82rem;
+    }
+
+    .leaf-cap-label {
+      color: var(--text-muted);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .leaf-cap-input {
+      width: 52px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      color: #38bdf8;
+      font-weight: 700;
+      border-radius: 5px;
+      text-align: center;
+      padding: 2px 4px;
+      font-size: 0.85rem;
+    }
+
+    .leaf-cap-input:focus {
+      outline: none;
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+    }
+
     /* Split Main Workspace */
     .main-workspace {
       display: flex;
@@ -387,6 +423,12 @@
       <button class="hop-btn" data-hops="3" title="Note: 3 hops can be query-intensive across large graphs">3 Hops</button>
     </div>
 
+    <!-- Max Leaf Children Control (Left of Traverse button) -->
+    <div class="leaf-cap-control" title="Maximum leaf children (nodes with no further branch children) per parent node. Non-leaf branch nodes are never filtered.">
+      <span class="leaf-cap-label">Max Leaves:</span>
+      <input type="number" id="max-leaf-cap" class="leaf-cap-input" value="25" min="1" max="500">
+    </div>
+
     <button id="run-query-btn" class="btn btn-primary btn-sm px-3">
       <i class="fa-solid fa-play me-1"></i> Traverse
     </button>
@@ -404,6 +446,14 @@
           <span>Quick Example Entities</span>
           <i class="fa-solid fa-bolt text-warning"></i>
         </div>
+        <button class="sample-chip" data-lei="529900EGRFQDZFSHYN17" data-name="PE Capital XI">
+          <i class="fa-solid fa-sitemap text-primary me-1"></i>
+          <div>
+            <div class="fw-semibold">PE Capital XI (IFM & Zenit Hub)</div>
+            <div class="lei-code ms-0">529900EGRFQDZFSHYN17</div>
+          </div>
+        </button>
+
         <button class="sample-chip" data-lei="549300BA33Y94QDNRN64" data-name="EMERGING MARKETS BOND FUND">
           <i class="fa-solid fa-globe text-info me-1"></i>
           <div>
@@ -417,14 +467,6 @@
           <div>
             <div class="fw-semibold">German Equity Fund</div>
             <div class="lei-code ms-0">549300F5RRQS6YL03H04</div>
-          </div>
-        </button>
-
-        <button class="sample-chip" data-lei="213800DOMEIDWW6AOC14" data-name="FP MATTIOLI WOODS BALANCED FUND">
-          <i class="fa-solid fa-scale-balanced text-success me-1"></i>
-          <div>
-            <div class="fw-semibold">FP Mattioli Woods Balanced Fund</div>
-            <div class="lei-code ms-0">213800DOMEIDWW6AOC14</div>
           </div>
         </button>
       </div>
@@ -625,6 +667,21 @@
         }
       });
 
+      // Dynamic Max Leaf Cap change event
+      $("#max-leaf-cap").on("change input", function() {
+        if (lastLoadedGraphData) {
+          const maxLeaves = parseInt($(this).val()) || 25;
+          const filtered = filterLeafNodes(
+            lastLoadedGraphData.nodes || [],
+            lastLoadedGraphData.links || [],
+            maxLeaves
+          );
+          $("#stat-nodes").text(filtered.nodes.length);
+          $("#stat-links").text(filtered.links.length);
+          renderD3Graph(filtered.nodes, filtered.links);
+        }
+      });
+
       // Zoom Controls
       $("#zoom-in-btn").on("click", () => {
         d3.select("#d3-canvas").transition().duration(300).call(zoomBehavior.scaleBy, 1.25);
@@ -638,6 +695,53 @@
       // Initial graph load omitted - waiting for user type-ahead lookup or action
     });
 
+    let lastLoadedGraphData = null;
+
+    /**
+     * Smart Leaf Pruning: Keep all branch/hub nodes (nodes with child/neighbor degree > 1),
+     * but cap pure leaf nodes (nodes with only 1 link back to parent) to maxLeaves per parent.
+     */
+    function filterLeafNodes(nodes, links, maxLeaves) {
+      if (!maxLeaves || maxLeaves <= 0) return { nodes, links };
+
+      const adj = {};
+      nodes.forEach(n => adj[n.id] = new Set());
+      links.forEach(l => {
+        const s = typeof l.source === 'object' ? l.source.id : l.source;
+        const t = typeof l.target === 'object' ? l.target.id : l.target;
+        if (adj[s]) adj[s].add(t);
+        if (adj[t]) adj[t].add(s);
+      });
+
+      const parentLeaves = {};
+      nodes.forEach(n => {
+        if (!n.isSeed && adj[n.id] && adj[n.id].size === 1) {
+          const parentId = Array.from(adj[n.id])[0];
+          if (!parentLeaves[parentId]) parentLeaves[parentId] = [];
+          parentLeaves[parentId].push(n.id);
+        }
+      });
+
+      const prunedLeafIds = new Set();
+      Object.keys(parentLeaves).forEach(parentId => {
+        const leafIds = parentLeaves[parentId];
+        if (leafIds.length > maxLeaves) {
+          leafIds.slice(maxLeaves).forEach(id => prunedLeafIds.add(id));
+        }
+      });
+
+      if (prunedLeafIds.size === 0) return { nodes, links };
+
+      const filteredNodes = nodes.filter(n => !prunedLeafIds.has(n.id));
+      const filteredLinks = links.filter(l => {
+        const s = typeof l.source === 'object' ? l.source.id : l.source;
+        const t = typeof l.target === 'object' ? l.target.id : l.target;
+        return !prunedLeafIds.has(s) && !prunedLeafIds.has(t);
+      });
+
+      return { nodes: filteredNodes, links: filteredLinks };
+    }
+
     /**
      * Load Dynamic Graph from backend API /api/graph
      */
@@ -648,14 +752,18 @@
         .done(function(data) {
           $("#loading-spinner").hide();
           try {
-            $("#stat-nodes").text(data.stats?.nodeCount || 0);
-            $("#stat-links").text(data.stats?.linkCount || 0);
+            lastLoadedGraphData = data;
+            const maxLeaves = parseInt($("#max-leaf-cap").val()) || 25;
+            const filtered = filterLeafNodes(data.nodes || [], data.links || [], maxLeaves);
+
+            $("#stat-nodes").text(filtered.nodes.length);
+            $("#stat-links").text(filtered.links.length);
 
             if (data.seed) {
               displayNodeInInspector(data.seed);
             }
 
-            renderD3Graph(data.nodes || [], data.links || []);
+            renderD3Graph(filtered.nodes, filtered.links);
           } catch (e) {
             console.error("Error rendering graph:", e);
             alert("Error rendering graph canvas: " + e.message);
