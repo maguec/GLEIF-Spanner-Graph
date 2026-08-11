@@ -50,6 +50,45 @@ uv run load_spanner.py --file data/<GOLDENCOPY-LEI-FILENAME>
 uv run load_relationships.py --file data/<RELATIONSHIP-RECORDS-FILENAME>
 ```
 
+## Run the queries to populate the EntityGraphAnalytics tables
+
+### Run the PageRank Algorithm
+```sql
+EXPORT DATA OPTIONS (
+  format = "CLOUD_SPANNER",
+  table = "EntityGraphAnalytics",
+  write_mode = 'upsert_ignore_all'
+) AS
+GRAPH LEIGraph
+CALL ModularityClustering(
+    node_labels => ['Entity'],
+    edge_labels => ['IS_RELATED_TO'],
+    resolution => 1.0
+) YIELD node, cluster
+RETURN 
+    node.LEI AS LEI,
+    cluster AS CommunityId
+```
+
+### Run the Jaccard Community Detection Algorithm
+```sql
+EXPORT DATA OPTIONS (
+  format = "CLOUD_SPANNER",
+  table = "EntityGraphAnalytics",
+  write_mode = 'upsert_ignore_all'
+) AS
+GRAPH LEIGraph
+CALL CorrelationClustering(
+    node_labels => ['Entity'],
+    edge_labels => ['IS_RELATED_TO'],
+    resolution => 0.5
+) YIELD node, cluster
+RETURN 
+    node.LEI AS LEI,
+    cluster AS JaccardCommunityId;
+```
+
+
 ## Querying data
 
 ### Sample queries to run in Spanner Studio
