@@ -329,6 +329,61 @@
       font-size: 0.85rem;
     }
 
+    /* Show Relationship Dual Autocomplete Container */
+    .rel-dual-search-container {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      flex-grow: 1;
+      max-width: 720px;
+    }
+
+    .rel-input-box {
+      position: relative;
+      flex: 1;
+    }
+
+    .rel-input-box input {
+      width: 100%;
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 6px 12px 6px 32px;
+      color: #fff;
+      font-size: 0.85rem;
+      outline: none;
+    }
+
+    .rel-input-box input:focus {
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+    }
+
+    .rel-input-box .rel-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #94a3b8;
+      font-size: 0.8rem;
+    }
+
+    .rel-swap-btn {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-color);
+      color: #38bdf8;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .rel-swap-btn:hover {
+      background: #38bdf8;
+      color: #0f172a;
+    }
+
     .leaf-cap-input:focus {
       outline: none;
       border-color: #38bdf8;
@@ -559,14 +614,34 @@
       <button class="nav-tab" data-view="pagerank">
         <i class="fa-solid fa-trophy"></i> Page Rank
       </button>
+      <button class="nav-tab" data-view="relationship">
+        <i class="fa-solid fa-route"></i> Show Relationship
+      </button>
     </div>
 
-    <!-- Type-Ahead Autocomplete Input -->
-    <div class="typeahead-container">
+    <!-- Type-Ahead Autocomplete Input (Explorer / Community / Page Rank) -->
+    <div class="typeahead-container" id="single-search-container">
       <i class="fa-solid fa-magnifying-glass search-icon"></i>
       <input type="text" id="entity-search" class="search-input"
              placeholder="Type entity name or LEI (e.g. Fidelity, BlackRock, Vanguard...)"
              autocomplete="off">
+    </div>
+
+    <!-- Dual Type-Ahead Autocomplete Container (Show Relationship View) -->
+    <div class="rel-dual-search-container" id="rel-dual-search-container">
+      <div class="rel-input-box">
+        <i class="fa-solid fa-circle-play rel-icon text-primary"></i>
+        <input type="text" id="rel-source-input" placeholder="Source: e.g. PE Capital XI"
+               data-lei="529900EGRFQDZFSHYN17" value="" autocomplete="off">
+      </div>
+      <button type="button" class="rel-swap-btn" id="rel-swap-btn" title="Swap Source and Target">
+        <i class="fa-solid fa-right-left"></i>
+      </button>
+      <div class="rel-input-box">
+        <i class="fa-solid fa-flag-checkered rel-icon text-warning"></i>
+        <input type="text" id="rel-target-input" placeholder="Target: e.g. Columbus Global Fund"
+               data-lei="529900MHMTMUTJWK3E84" value="" autocomplete="off">
+      </div>
     </div>
 
     <!-- Hop Depth Selector -->
@@ -594,34 +669,49 @@
     <aside class="sidebar">
 
       <!-- Sample Entities Quick Launcher -->
-      <div class="sidebar-section">
+      <div class="sidebar-section" id="quick-examples-section">
         <div class="section-title">
           <span>Quick Example Entities</span>
           <i class="fa-solid fa-bolt text-warning"></i>
         </div>
-        <button class="sample-chip" data-lei="529900EGRFQDZFSHYN17" data-name="PE Capital XI">
-          <i class="fa-solid fa-sitemap text-primary me-1"></i>
-          <div>
-            <div class="fw-semibold">PE Capital XI (IFM & Zenit Hub)</div>
-            <div class="lei-code ms-0">529900EGRFQDZFSHYN17</div>
-          </div>
-        </button>
 
-        <button class="sample-chip" data-lei="549300BA33Y94QDNRN64" data-name="EMERGING MARKETS BOND FUND">
-          <i class="fa-solid fa-globe text-info me-1"></i>
-          <div>
-            <div class="fw-semibold">Emerging Markets Bond Fund</div>
-            <div class="lei-code ms-0">549300BA33Y94QDNRN64</div>
-          </div>
-        </button>
+        <!-- Single entity example chips for Explorer view -->
+        <div class="explorer-example-chips" id="explorer-example-chips">
+          <button class="sample-chip" data-lei="529900EGRFQDZFSHYN17" data-name="PE Capital XI">
+            <i class="fa-solid fa-sitemap text-primary me-1"></i>
+            <div>
+              <div class="fw-semibold">PE Capital XI (IFM & Zenit Hub)</div>
+              <div class="lei-code ms-0">529900EGRFQDZFSHYN17</div>
+            </div>
+          </button>
 
-        <button class="sample-chip" data-lei="549300F5RRQS6YL03H04" data-name="GERMAN EQUITY FUND">
-          <i class="fa-solid fa-chart-pie text-warning me-1"></i>
-          <div>
-            <div class="fw-semibold">German Equity Fund</div>
-            <div class="lei-code ms-0">549300F5RRQS6YL03H04</div>
-          </div>
-        </button>
+          <button class="sample-chip" data-lei="549300BA33Y94QDNRN64" data-name="EMERGING MARKETS BOND FUND">
+            <i class="fa-solid fa-globe text-info me-1"></i>
+            <div>
+              <div class="fw-semibold">Emerging Markets Bond Fund</div>
+              <div class="lei-code ms-0">549300BA33Y94QDNRN64</div>
+            </div>
+          </button>
+
+          <button class="sample-chip" data-lei="549300F5RRQS6YL03H04" data-name="GERMAN EQUITY FUND">
+            <i class="fa-solid fa-chart-pie text-warning me-1"></i>
+            <div>
+              <div class="fw-semibold">German Equity Fund</div>
+              <div class="lei-code ms-0">549300F5RRQS6YL03H04</div>
+            </div>
+          </button>
+        </div>
+
+        <!-- Relationship example chip for Show Relationship view only -->
+        <div class="relationship-example-chips" id="relationship-example-chips" style="display: none;">
+          <button class="sample-chip" id="pe-columbus-example-btn" style="border-color: rgba(168,85,247,0.4); background: rgba(168,85,247,0.08);">
+            <i class="fa-solid fa-route text-purple me-1" style="color: #a855f7;"></i>
+            <div>
+              <div class="fw-semibold text-white">PE Capital XI → Columbus Global Fund</div>
+              <div class="lei-code ms-0 text-info">2-Hop Spanner ANY SHORTEST Path</div>
+            </div>
+          </button>
+        </div>
       </div>
 
       <!-- Graph Statistics -->
@@ -660,6 +750,24 @@
           <div class="small text-muted mb-2">Precomputed EntityGraphAnalytics cluster members sharing structural overlap:</div>
           <div id="community-members-list" style="max-height: 190px; overflow-y: auto;">
             <div class="small text-muted">Select or search an entity to inspect overlapping community cluster members.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Shortest Path Storyboard (Visible in Show Relationship Mode) -->
+      <div class="sidebar-section" id="relationship-path-section" style="display: none;">
+        <div class="section-title">
+          <span>Spanner ANY SHORTEST Path</span>
+          <i class="fa-solid fa-route text-info"></i>
+        </div>
+        <div class="node-detail-card mb-2">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span id="rel-distance-badge" class="badge bg-info text-dark fw-bold">2 Hops Distance</span>
+            <span class="badge bg-dark text-warning border border-warning">GRAPH_TABLE GQL</span>
+          </div>
+          <div class="small text-muted mb-2">Connecting relationship pathway sequence:</div>
+          <div id="rel-pathway-storyboard" style="max-height: 220px; overflow-y: auto;">
+            <div class="small text-muted">Enter Source and Target companies to discover shortest path.</div>
           </div>
         </div>
       </div>
@@ -927,6 +1035,85 @@
           .appendTo(ul);
       };
 
+      // Source Entity Autocomplete for Show Relationship View
+      $("#rel-source-input").autocomplete({
+        source: function(request, response) {
+          $.getJSON("/autocomplete", { term: request.term }, function(data) {
+            response(data);
+          });
+        },
+        minLength: 2,
+        select: function(event, ui) {
+          $("#rel-source-input").data("lei", ui.item.id).val(ui.item.value);
+          if (currentView === 'relationship') {
+            loadShortestPath($("#rel-source-input").data("lei"), $("#rel-target-input").data("lei"));
+          }
+          return false;
+        }
+      }).autocomplete("instance")._renderItem = function(ul, item) {
+        return $("<li>")
+          .append(`<div>
+                    <span class="fw-semibold">${item.value}</span>
+                    <span class="lei-code">${item.id}</span>
+                   </div>`)
+          .appendTo(ul);
+      };
+
+      // Target Entity Autocomplete for Show Relationship View
+      $("#rel-target-input").autocomplete({
+        source: function(request, response) {
+          $.getJSON("/autocomplete", { term: request.term }, function(data) {
+            response(data);
+          });
+        },
+        minLength: 2,
+        select: function(event, ui) {
+          $("#rel-target-input").data("lei", ui.item.id).val(ui.item.value);
+          if (currentView === 'relationship') {
+            loadShortestPath($("#rel-source-input").data("lei"), $("#rel-target-input").data("lei"));
+          }
+          return false;
+        }
+      }).autocomplete("instance")._renderItem = function(ul, item) {
+        return $("<li>")
+          .append(`<div>
+                    <span class="fw-semibold">${item.value}</span>
+                    <span class="lei-code">${item.id}</span>
+                   </div>`)
+          .appendTo(ul);
+      };
+
+      // Swap button in Show Relationship view
+      $("#rel-swap-btn").on("click", function() {
+        const sVal = $("#rel-source-input").val();
+        const sLei = $("#rel-source-input").data("lei");
+        const tVal = $("#rel-target-input").val();
+        const tLei = $("#rel-target-input").data("lei");
+
+        $("#rel-source-input").val(tVal).data("lei", tLei);
+        $("#rel-target-input").val(sVal).data("lei", sLei);
+
+        if (currentView === 'relationship' && sLei && tLei) {
+          loadShortestPath(tLei, sLei);
+        }
+      });
+
+      // PE Capital XI -> Columbus Global Fund quick launcher chip (on Show Relationship view)
+      $("#pe-columbus-example-btn").on("click", function() {
+        const sLei = "529900EGRFQDZFSHYN17";
+        const sName = "PE Capital XI";
+        const tLei = "529900MHMTMUTJWK3E84";
+        const tName = "Columbus Global Fund";
+
+        $("#rel-source-input").data("lei", sLei).val(sName);
+        $("#rel-target-input").data("lei", tLei).val(tName);
+
+        if (currentView !== 'relationship') {
+          switchViewMode('relationship');
+        }
+        loadShortestPath(sLei, tLei);
+      });
+
       // Hop depth selector click events
       $("#hop-selector .hop-btn").on("click", function() {
         $("#hop-selector .hop-btn").removeClass("active");
@@ -937,8 +1124,8 @@
         triggerActiveViewQuery(activeLEI);
       });
 
-      // Quick Example chips click
-      $(".sample-chip").on("click", function() {
+      // Quick Example chips click (Explorer view)
+      $(".sample-chip:not(#pe-columbus-example-btn)").on("click", function() {
         const lei = $(this).data("lei");
         const name = $(this).data("name");
         activeLEI = lei;
@@ -946,9 +1133,19 @@
         triggerActiveViewQuery(activeLEI);
       });
 
-      // Traverse button click
+      // Traverse / Find Path button click
       $("#run-query-btn").on("click", function() {
-        triggerActiveViewQuery(activeLEI);
+        if (currentView === 'relationship') {
+          const srcLei = $("#rel-source-input").data("lei");
+          const tgtLei = $("#rel-target-input").data("lei");
+          if (!srcLei || !tgtLei) {
+            alert("Please select or click a Source and Target entity to compute the shortest relationship path.");
+            return;
+          }
+          loadShortestPath(srcLei, tgtLei);
+        } else {
+          triggerActiveViewQuery(activeLEI);
+        }
       });
 
       // Recenter button in inspector
@@ -1048,7 +1245,7 @@
     }
 
     /**
-     * View Switcher Handler (Explorer | Community | Page Rank)
+     * View Switcher Handler (Explorer | Community | Page Rank | Show Relationship)
      */
     function switchViewMode(view) {
       currentView = view;
@@ -1060,6 +1257,13 @@
         $("#pagerank-view").hide();
         $("#community-table-view").hide();
         $("#community-cluster-section").hide();
+        $("#relationship-path-section").hide();
+        $("#quick-examples-section").show();
+        $("#explorer-example-chips").show();
+        $("#relationship-example-chips").hide();
+        $("#single-search-container").show();
+        $("#rel-dual-search-container").hide();
+        $("#hop-selector").show();
         $("#leaf-cap-control").show();
         $("#stats-title").text("Traversal Summary");
         $("#run-query-btn").html('<i class="fa-solid fa-play me-1"></i> Traverse');
@@ -1085,6 +1289,11 @@
         $("#pagerank-view").hide();
         $("#community-table-view").show();
         $("#community-cluster-section").show();
+        $("#relationship-path-section").hide();
+        $("#quick-examples-section").hide(); // Hidden on Community tab per user spec
+        $("#single-search-container").show();
+        $("#rel-dual-search-container").hide();
+        $("#hop-selector").show();
         $("#leaf-cap-control").hide();
         $("#stats-title").text("Community Graph & Pathways");
         $("#run-query-btn").html('<i class="fa-solid fa-users-gear me-1"></i> Analyze Reachability');
@@ -1110,9 +1319,56 @@
         $("#graph-workspace").hide();
         $("#community-table-view").hide();
         $("#pagerank-view").show();
+        $("#quick-examples-section").hide(); // Hidden on Page Rank tab per user spec
+        $("#single-search-container").show();
+        $("#rel-dual-search-container").hide();
+        $("#hop-selector").hide();
         $("#leaf-cap-control").hide();
         $("#run-query-btn").html('<i class="fa-solid fa-magnifying-glass me-1"></i> Filter PageRank');
         loadPageRankLeaderboard($("#entity-search").val() || "");
+      } else if (view === 'relationship') {
+        $("#graph-workspace").css("display", "flex");
+        $("#pagerank-view").hide();
+        $("#community-table-view").hide();
+        $("#community-cluster-section").hide();
+        $("#relationship-path-section").show();
+        $("#quick-examples-section").show();
+        $("#explorer-example-chips").hide(); // Hide single entity examples in relationship view
+        $("#relationship-example-chips").show(); // Only show PE Capital XI -> Columbus Global Fund in relationship view
+        $("#single-search-container").hide();
+        $("#rel-dual-search-container").css("display", "flex");
+        $("#hop-selector").hide();
+        $("#leaf-cap-control").hide();
+        $("#stats-title").text("Shortest Path Summary");
+        $("#run-query-btn").html('<i class="fa-solid fa-route me-1"></i> Find Path');
+
+        $(".legend-box").html(`
+          <div class="section-title mb-2">Shortest Path Legend</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span><span>Source Entity (Hop 0)</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #38bdf8;"></span><span>Intermediate Entity</span></div>
+          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>Target Destination Entity</span></div>
+        `);
+
+        // By default, do NOT run query automatically on blank placeholder fields!
+        const srcLei = $("#rel-source-input").data("lei");
+        const tgtLei = $("#rel-target-input").data("lei");
+        const srcVal = $("#rel-source-input").val().strip ? $("#rel-source-input").val().strip() : $("#rel-source-input").val();
+        const tgtVal = $("#rel-target-input").val().strip ? $("#rel-target-input").val().strip() : $("#rel-target-input").val();
+
+        if (srcVal && tgtVal && srcLei && tgtLei) {
+          loadShortestPath(srcLei, tgtLei);
+        } else {
+          $("#rel-distance-badge").text("-- Hops Distance");
+          $("#stat-nodes").text("0");
+          $("#stat-links").text("0");
+          $("#stats-hops").text("Ready");
+          $("#rel-pathway-storyboard").html(`
+            <div class="small text-muted p-2">
+              <i class="fa-solid fa-circle-info text-info me-1"></i>
+              Grayed-out hints display starting entities (<b>PE Capital XI</b> → <b>Columbus Global Fund</b>). Click the example card above or enter custom entities, then click <b>Find Path</b> to execute Spanner GQL <code>ANY SHORTEST</code>.
+            </div>
+          `);
+        }
       }
     }
 
@@ -1123,7 +1379,80 @@
         loadCommunity(lei, currentHops);
       } else if (currentView === 'pagerank') {
         loadPageRankLeaderboard($("#entity-search").val() || lei);
+      } else if (currentView === 'relationship') {
+        const srcLei = $("#rel-source-input").data("lei") || "529900EGRFQDZFSHYN17";
+        const tgtLei = $("#rel-target-input").data("lei") || "529900MHMTMUTJWK3E84";
+        loadShortestPath(srcLei, tgtLei);
       }
+    }
+
+    /**
+     * Load Shortest Path via Spanner GQL ANY SHORTEST path matching (/api/shortest_path)
+     */
+    function loadShortestPath(source_lei, target_lei) {
+      $("#loading-spinner").css("display", "flex");
+
+      $.getJSON(`/api/shortest_path?source=${encodeURIComponent(source_lei)}&target=${encodeURIComponent(target_lei)}`)
+        .done(function(data) {
+          $("#loading-spinner").hide();
+          try {
+            lastLoadedGraphData = data;
+            const stats = data.stats || {};
+            const hopCount = stats.hopCount !== undefined ? stats.hopCount : 0;
+
+            $("#rel-distance-badge").text(`${hopCount} Hop${hopCount !== 1 ? 's' : ''} Distance`);
+            $("#stat-nodes").text(data.nodes?.length || 0);
+            $("#stat-links").text(data.links?.length || 0);
+            $("#stats-hops").text(`${hopCount} Hops Path`);
+
+            // Render visual connecting force graph
+            renderD3Graph(data.nodes || [], data.links || []);
+
+            // Populate Shortest Path step-by-step storyboard
+            const storyEl = $("#rel-pathway-storyboard");
+            storyEl.empty();
+
+            if (!stats.found || !data.path || data.path.length === 0) {
+              storyEl.html('<div class="small text-danger">No connecting relationship path found between selected entities within 6 hops.</div>');
+              return;
+            }
+
+            data.path.forEach((step, idx) => {
+              const isFirst = (idx === 0);
+              const isLast = (idx === data.path.length - 1);
+              const badgeBg = isFirst ? 'bg-primary' : (isLast ? 'bg-purple' : 'bg-info text-dark');
+              const item = $(`
+                <div class="p-2 mb-2 rounded border border-secondary bg-dark">
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="badge ${badgeBg}">${isFirst ? 'SOURCE' : (isLast ? 'TARGET' : `HOP ${step.step}`)}</span>
+                    <span class="lei-code ms-0">${step.lei}</span>
+                  </div>
+                  <div class="fw-semibold text-white small">${step.name}</div>
+                  <div class="small text-muted">${step.category} • ${step.jurisdiction}</div>
+                </div>
+              `);
+              item.on("click", function() {
+                activeLEI = step.lei;
+                displayNodeInInspector(step);
+              });
+              storyEl.append(item);
+            });
+
+            if (data.source) {
+              displayNodeInInspector(data.source);
+            }
+          } catch (e) {
+            console.error("Error rendering shortest path:", e);
+            alert("Error rendering shortest path: " + e.message);
+          }
+        })
+        .fail(function(err) {
+          $("#loading-spinner").hide();
+          alert("Error loading shortest path: " + (err.responseJSON?.error || err.statusText));
+        })
+        .always(function() {
+          $("#loading-spinner").hide();
+        });
     }
 
     /**

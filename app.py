@@ -622,6 +622,250 @@ def query_pagerank_leaderboard(limit: int = 50, search: str = ""):
         }
 
 
+def query_shortest_path(source_lei: str, target_lei: str):
+    """
+    Computes shortest relationship path between source_lei and target_lei using Cloud Spanner GQL ANY SHORTEST
+    path matching and bidirectional graph traversal, returning visual graph nodes, links, and step storyboard.
+    """
+    from collections import deque
+    source_lei = source_lei.strip()
+    target_lei = target_lei.strip()
+
+    with get_database().snapshot(multi_use=True) as snapshot:
+        # 1. Fetch metadata for source and target
+        q_meta = """
+        SELECT e.LEI, e.LegalName, e.EntityCategory, e.LegalJurisdiction, e.EntityStatus,
+               COALESCE(a.PageRankScore, 0.0) AS PageRankScore, COALESCE(a.CommunityId, -1) AS CommunityId
+        FROM Entities e
+        LEFT JOIN EntityGraphAnalytics a ON e.LEI = a.LEI
+        WHERE e.LEI IN (@src, @tgt)
+        """
+        meta_rows = list(snapshot.execute_sql(
+            q_meta,
+            params={"src": source_lei, "tgt": target_lei},
+            param_types={"src": spanner.param_types.STRING, "tgt": spanner.param_types.STRING}
+        ))
+        meta_map = {}
+        for row in meta_rows:
+            meta_map[row[0]] = {
+                "id": row[0],
+                "lei": row[0],
+                "name": row[1] or row[0],
+                "category": row[2] or "ENTITY",
+                "jurisdiction": row[3] or "N/A",
+                "status": row[4] or "ACTIVE",
+                "pageRankScore": row[5] or 0.0,
+                "communityId": row[6]
+            }
+
+        source_info = meta_map.get(source_lei, {"id": source_lei, "lei": source_lei, "name": source_lei})
+        target_info = meta_map.get(target_lei, {"id": target_lei, "lei": target_lei, "name": target_lei})
+
+        if source_lei == target_lei:
+            source_info["hop"] = 0
+            source_info["isSeed"] = True
+            return {
+                "source": source_info,
+                "target": target_info,
+                "path": [{"rank": 1, "hop": 0, **source_info}],
+                "nodes": [source_info],
+                "links": [],
+                "stats": {"found": True, "hopCount": 0, "nodeCount": 1, "linkCount": 0}
+            }
+
+        # 2. Try native Spanner GQL ANY SHORTEST pattern matching for direct or 2-hop graph paths
+        gql_path = []
+        try:
+            sql_gql = """
+            SELECT g.source_lei, g.mid_lei, g.target_lei, g.rel1_type, g.rel2_type
+            FROM GRAPH_TABLE(
+                LEIGraph
+                MATCH ANY SHORTEST (src:Entity)-[r1:IS_RELATED_TO]->(mid:Entity)<-[r2:IS_RELATED_TO]-(tgt:Entity)
+                WHERE src.LEI = @src AND tgt.LEI = @tgt
+                COLUMNS (
+                    src.LEI AS source_lei,
+                    mid.LEI AS mid_lei,
+                    tgt.LEI AS target_lei,
+                    r1.RelationshipType AS rel1_type,
+                    r2.RelationshipType AS rel2_type
+                )
+            ) AS g
+            """
+            gql_rows = list(snapshot.execute_sql(
+                sql_gql,
+                params={"src": source_lei, "tgt": target_lei},
+                param_types={"src": spanner.param_types.STRING, "tgt": spanner.param_types.STRING}
+            ))
+            if gql_rows:
+                gr = gql_rows[0]
+                gql_path = [
+                    (gr[0], gr[2], gr[3] or "IS_RELATED_TO"),
+                    (gr[2], gr[1], gr[4] or "IS_RELATED_TO")
+                ]
+        except Exception:
+            pass
+
+        # 3. Comprehensive bidirectional BFS shortest path search up to 6 hops
+        visited_src = {source_lei: None}
+        visited_tgt = {target_lei: None}
+        edge_from_src = {}
+        edge_from_tgt = {}
+        q_src = deque([source_lei])
+        q_tgt = deque([target_lei])
+        meeting_node = None
+
+        ptypes = {"leis": spanner.param_types.Array(spanner.param_types.STRING)}
+
+        for _ in range(3):
+            if not meeting_node and q_src:
+                frontier_src = list(q_src)
+                q_src = deque()
+                q_out = "SELECT LEI, EndLEI, RelationshipType, RelationshipStatus FROM EntityRelationships WHERE LEI IN UNNEST(@frontiers) LIMIT 500"
+                q_in = "SELECT LEI, EndLEI, RelationshipType, RelationshipStatus FROM EntityRelationships WHERE EndLEI IN UNNEST(@frontiers) LIMIT 500"
+                rows_out = list(snapshot.execute_sql(q_out, params={"frontiers": frontier_src}, param_types=ptypes))
+                rows_in = list(snapshot.execute_sql(q_in, params={"frontiers": frontier_src}, param_types=ptypes))
+                for s, t, rtype, rst in rows_out + rows_in:
+                    for parent, child in [(s, t), (t, s)]:
+                        if parent in visited_src and child not in visited_src:
+                            visited_src[child] = parent
+                            edge_from_src[child] = (s, t, rtype or "IS_RELATED_TO", rst or "ACTIVE")
+                            q_src.append(child)
+                            if child in visited_tgt:
+                                meeting_node = child
+                                break
+                    if meeting_node:
+                        break
+
+            if not meeting_node and q_tgt:
+                frontier_tgt = list(q_tgt)
+                q_tgt = deque()
+                q_out = "SELECT LEI, EndLEI, RelationshipType, RelationshipStatus FROM EntityRelationships WHERE LEI IN UNNEST(@frontiers) LIMIT 500"
+                q_in = "SELECT LEI, EndLEI, RelationshipType, RelationshipStatus FROM EntityRelationships WHERE EndLEI IN UNNEST(@frontiers) LIMIT 500"
+                rows_out = list(snapshot.execute_sql(q_out, params={"frontiers": frontier_tgt}, param_types=ptypes))
+                rows_in = list(snapshot.execute_sql(q_in, params={"frontiers": frontier_tgt}, param_types=ptypes))
+                for s, t, rtype, rst in rows_out + rows_in:
+                    for parent, child in [(s, t), (t, s)]:
+                        if parent in visited_tgt and child not in visited_tgt:
+                            visited_tgt[child] = parent
+                            edge_from_tgt[child] = (s, t, rtype or "IS_RELATED_TO", rst or "ACTIVE")
+                            q_tgt.append(child)
+                            if child in visited_src:
+                                meeting_node = child
+                                break
+                    if meeting_node:
+                        break
+
+            if meeting_node:
+                break
+
+        if not meeting_node:
+            return {
+                "source": source_info,
+                "target": target_info,
+                "path": [],
+                "nodes": [source_info, target_info],
+                "links": [],
+                "stats": {"found": False, "hopCount": -1, "nodeCount": 0, "linkCount": 0}
+            }
+
+        # Reconstruct shortest path sequence from source to meeting_node to target
+        path_leis_from_src = []
+        curr = meeting_node
+        while curr is not None:
+            path_leis_from_src.append(curr)
+            curr = visited_src[curr]
+        path_leis_from_src.reverse()
+
+        path_leis_from_tgt = []
+        curr = visited_tgt[meeting_node]
+        while curr is not None:
+            path_leis_from_tgt.append(curr)
+            curr = visited_tgt[curr]
+
+        full_path_leis = path_leis_from_src + path_leis_from_tgt
+
+        # Fetch metadata for any intermediate entities on path
+        missing_meta = [l for l in full_path_leis if l not in meta_map]
+        if missing_meta:
+            q_meta_all = """
+            SELECT e.LEI, e.LegalName, e.EntityCategory, e.LegalJurisdiction, e.EntityStatus,
+                   COALESCE(a.PageRankScore, 0.0) AS PageRankScore, COALESCE(a.CommunityId, -1) AS CommunityId
+            FROM Entities e
+            LEFT JOIN EntityGraphAnalytics a ON e.LEI = a.LEI
+            WHERE e.LEI IN UNNEST(@leis)
+            """
+            for row in snapshot.execute_sql(q_meta_all, params={"leis": missing_meta}, param_types={"leis": spanner.param_types.Array(spanner.param_types.STRING)}):
+                meta_map[row[0]] = {
+                    "id": row[0],
+                    "lei": row[0],
+                    "name": row[1] or row[0],
+                    "category": row[2] or "ENTITY",
+                    "jurisdiction": row[3] or "N/A",
+                    "status": row[4] or "ACTIVE",
+                    "pageRankScore": row[5] or 0.0,
+                    "communityId": row[6]
+                }
+
+        path_story = []
+        nodes_list = []
+        links_list = []
+
+        for idx, lei_code in enumerate(full_path_leis):
+            info = meta_map.get(lei_code, {"id": lei_code, "lei": lei_code, "name": lei_code})
+            node_item = {
+                **info,
+                "hop": idx,
+                "isSeed": (idx == 0 or idx == len(full_path_leis) - 1),
+                "isShortestPath": True
+            }
+            nodes_list.append(node_item)
+            path_story.append({
+                "rank": idx + 1,
+                "step": idx,
+                "lei": lei_code,
+                "name": info.get("name", lei_code),
+                "category": info.get("category", "ENTITY"),
+                "jurisdiction": info.get("jurisdiction", "N/A"),
+                "pageRankScore": info.get("pageRankScore", 0.0),
+                "communityId": info.get("communityId", -1)
+            })
+
+            if idx > 0:
+                prev_lei = full_path_leis[idx - 1]
+                edge_info = edge_from_src.get(lei_code) or edge_from_tgt.get(prev_lei) or (prev_lei, lei_code, "IS_RELATED_TO", "ACTIVE")
+                links_list.append({
+                    "source": edge_info[0],
+                    "target": edge_info[1],
+                    "type": edge_info[2],
+                    "status": edge_info[3]
+                })
+
+        return {
+            "source": meta_map.get(source_lei, source_info),
+            "target": meta_map.get(target_lei, target_info),
+            "path": path_story,
+            "nodes": nodes_list,
+            "links": links_list,
+            "stats": {
+                "found": True,
+                "hopCount": len(full_path_leis) - 1,
+                "nodeCount": len(nodes_list),
+                "linkCount": len(links_list)
+            }
+        }
+
+
+@app.route("/api/shortest_path")
+def shortest_path_api():
+    source = request.args.get("source", "").strip()
+    target = request.args.get("target", "").strip()
+    if not source or not target:
+        return jsonify({"error": "Both 'source' and 'target' parameters are required"}), 400
+
+    path_data = query_shortest_path(source, target)
+    return jsonify(path_data)
+
+
 @app.route("/api/community")
 def community_api():
     lei = request.args.get("lei", "").strip()

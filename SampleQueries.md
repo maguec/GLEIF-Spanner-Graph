@@ -527,5 +527,44 @@ ORDER BY ConnectedCommunitySeedsCount DESC, MinHopDistance ASC, PageRankScore DE
 LIMIT 50;
 ```
 
+---
+
+## Query 14: Web App Spanner `ANY SHORTEST` Shortest Relationship Path Query (`Show Relationship` Tab Query)
+
+### Business Scenario
+Powers the **Show Relationship** tab inside the web application. Given a Source Entity (**PE Capital XI** `529900EGRFQDZFSHYN17`) and a Target Entity (**Columbus Global Fund** `529900MHMTMUTJWK3E84`), executes Cloud Spanner's native `ANY SHORTEST` GQL path pattern matching to retrieve the exact intermediate connecting entities and relationships along the shortest pathway.
+
+### How It Works
+Invokes `MATCH ANY SHORTEST (src:Entity)-[r1:IS_RELATED_TO]->(mid:Entity)<-[r2:IS_RELATED_TO]-(tgt:Entity)` inside `GRAPH_TABLE` against `LEIGraph` to discover connecting entities such as **IFM INDEPENDENT FUND MANAGEMENT AKTIENGESELLSCHAFT** (`529900R8C5JSAWC1EW32`) linking PE Capital XI to Columbus Global Fund.
+
+```sql
+SELECT 
+    g.source_lei,
+    g.source_name,
+    g.mid_lei,
+    g.mid_name,
+    g.target_lei,
+    g.target_name,
+    g.rel1_type,
+    g.rel2_type
+FROM GRAPH_TABLE(
+    LEIGraph
+    MATCH ANY SHORTEST (src:Entity)-[r1:IS_RELATED_TO]->(mid:Entity)<-[r2:IS_RELATED_TO]-(tgt:Entity)
+    WHERE src.LEI = '529900EGRFQDZFSHYN17'       -- Source Entity: PE Capital XI
+      AND tgt.LEI = '529900MHMTMUTJWK3E84'       -- Target Entity: Columbus Global Fund
+    COLUMNS (
+        src.LEI AS source_lei,
+        src.LegalName AS source_name,
+        mid.LEI AS mid_lei,
+        mid.LegalName AS mid_name,
+        tgt.LEI AS target_lei,
+        tgt.LegalName AS target_name,
+        r1.RelationshipType AS rel1_type,
+        r2.RelationshipType AS rel2_type
+    )
+) AS g;
+```
+
+
 
 
