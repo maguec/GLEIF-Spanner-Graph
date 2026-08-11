@@ -265,6 +265,40 @@
       background: rgba(168, 85, 247, 0.15);
     }
 
+    /* Community Outward Reachability Destinations Table */
+    .community-table-view {
+      flex-grow: 1;
+      height: calc(100vh - 64px);
+      overflow-y: auto;
+      background: #0f172a;
+      padding: 24px;
+      display: none;
+    }
+
+    .seed-progress-bar {
+      height: 7px;
+      background: #1e293b;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .seed-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #38bdf8, #a855f7);
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+
+    .connecting-seeds-drawer {
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-top: 8px;
+      font-size: 0.82rem;
+    }
+
     /* Max Leaf Cap Control */
     .leaf-cap-control {
       display: flex;
@@ -787,6 +821,65 @@
     </div>
   </div>
 
+  <!-- Community Outward Reachability Destinations Table View -->
+  <div class="community-table-view" id="community-table-view">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <div>
+        <h3 class="fw-bold text-white mb-1"><i class="fa-solid fa-users-gear text-purple me-2" style="color:#a855f7;"></i> Community Outward Reachability Table</h3>
+        <p class="text-muted mb-0 small">Destinations reachable within selected hop distance, sorted by how many distinct Community Seed nodes have a pathway to each destination.</p>
+      </div>
+      <div>
+        <span id="comm-table-cluster-badge" class="badge bg-purple px-3 py-2 fs-6" style="background:#a855f7;">Community #--</span>
+      </div>
+    </div>
+
+    <!-- Summary KPI Cards -->
+    <div class="row g-3 mb-4">
+      <div class="col-md-4">
+        <div class="pr-kpi-card">
+          <div class="small text-muted text-uppercase fw-bold">Community Starting Seed Nodes</div>
+          <div id="comm-table-seed-count" class="h3 text-purple fw-bold my-1" style="color:#a855f7;">0 Seeds</div>
+          <div id="comm-table-seed-name" class="small text-muted text-truncate">Cluster starting entities</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="pr-kpi-card">
+          <div class="small text-muted text-uppercase fw-bold">Reachable Destinations (within <span id="comm-table-hop-label">1 Hop</span>)</div>
+          <div id="comm-table-dest-count" class="h3 text-info fw-bold my-1">0 Entities</div>
+          <div class="small text-muted">Sorted by connecting Community Seeds DESC</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="pr-kpi-card">
+          <div class="small text-muted text-uppercase fw-bold">Highest Shared Destination Hub</div>
+          <div id="comm-table-top-dest" class="h6 text-warning fw-bold my-1 text-truncate">--</div>
+          <div id="comm-table-top-overlap" class="small text-muted">--</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Destinations Reachability Table -->
+    <div class="pr-table-container">
+      <table class="pr-table">
+        <thead>
+          <tr>
+            <th style="width: 65px;">Rank</th>
+            <th>Destination Entity & LEI</th>
+            <th style="width: 260px;">Connected Community Seeds (Sorted DESC)</th>
+            <th style="width: 130px;">Min Hop</th>
+            <th style="width: 140px;">PageRank Score</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="comm-destinations-body">
+          <tr>
+            <td colspan="6" class="text-center text-muted py-4">Select an entity or enter search to analyze community destinations...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- JavaScript Application Logic -->
   <script>
     let currentView = 'explorer';
@@ -965,19 +1058,11 @@
       if (view === 'explorer') {
         $("#graph-workspace").css("display", "flex");
         $("#pagerank-view").hide();
+        $("#community-table-view").hide();
         $("#community-cluster-section").hide();
         $("#leaf-cap-control").show();
         $("#stats-title").text("Traversal Summary");
         $("#run-query-btn").html('<i class="fa-solid fa-play me-1"></i> Traverse');
-
-        // Restore legend for explorer
-        $(".legend-box").html(`
-          <div class="section-title mb-2">Hop Distance Legend</div>
-          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span><span>Seed Lookup Entity (Hop 0)</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background: #38bdf8;"></span><span>1-Hop Connected Entity</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background: #34d399;"></span><span>2-Hop Connected Entity</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>3-Hop Connected Entity</span></div>
-        `);
 
         // Restore explorer default hop = 2 if switching back
         currentHops = 2;
@@ -987,24 +1072,15 @@
 
         loadGraph(activeLEI, currentHops);
       } else if (view === 'community') {
-        $("#graph-workspace").css("display", "flex");
+        $("#graph-workspace").hide();
         $("#pagerank-view").hide();
+        $("#community-table-view").show();
         $("#community-cluster-section").show();
         $("#leaf-cap-control").hide();
         $("#stats-title").text("Community Summary");
-        $("#run-query-btn").html('<i class="fa-solid fa-users-gear me-1"></i> Analyze Cluster');
+        $("#run-query-btn").html('<i class="fa-solid fa-users-gear me-1"></i> Analyze Reachability');
 
-        // Customize legend for Community starting nodes and multi-hop outward graph
-        $(".legend-box").html(`
-          <div class="section-title mb-2">Community Cluster Legend</div>
-          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>Community Cluster Starting Member</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background: #f59e0b;"></span><span>Selected Entity</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background: #38bdf8;"></span><span>1-Hop Outward Connected</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background: #34d399;"></span><span>2-Hop Outward Connected</span></div>
-          <div class="legend-item"><span class="legend-dot" style="background: #a855f7;"></span><span>3-Hop Outward Connected</span></div>
-        `);
-
-        // Per user spec: default to 1 hop outward from community cluster, toggleable to 2 or 3 hops
+        // Default to 1 hop outward from community starting seeds
         currentHops = 1;
         $("#hop-selector .hop-btn").removeClass("active");
         $("#hop-selector .hop-btn[data-hops='1']").addClass("active");
@@ -1013,6 +1089,7 @@
         loadCommunity(activeLEI, currentHops);
       } else if (view === 'pagerank') {
         $("#graph-workspace").hide();
+        $("#community-table-view").hide();
         $("#pagerank-view").show();
         $("#leaf-cap-control").hide();
         $("#run-query-btn").html('<i class="fa-solid fa-magnifying-glass me-1"></i> Filter PageRank');
@@ -1031,11 +1108,13 @@
     }
 
     /**
-     * Load Community Overlap Analysis from backend API /api/community
-     * Performs a 1 or 2 hop query (defaulting to 1 hop) looking up LEI in EntityGraphAnalytics
+     * Load Community Reachability Analysis Table from backend API /api/community
+     * Calculates destinations reachable within hops (1, 2, or 3) and counts how many
+     * distinct community seed nodes have a pathway to each destination sorted by connections DESC.
      */
     function loadCommunity(lei, hops) {
       $("#loading-spinner").css("display", "flex");
+      $("#comm-table-hop-label").text(`${hops} Hop${hops > 1 ? 's' : ''}`);
 
       $.getJSON(`/api/community?lei=${encodeURIComponent(lei)}&hops=${hops}&limit=150`)
         .done(function(data) {
@@ -1044,15 +1123,23 @@
             lastLoadedGraphData = data;
             const comm = data.community || {};
             const commId = comm.communityId !== undefined ? comm.communityId : -1;
-            const prScore = comm.pageRankScore ? comm.pageRankScore.toFixed(6) : '--';
+            const seedCount = data.stats?.communityMemberCount || comm.totalMembers || 0;
+            const dests = data.destinations || [];
 
-            $("#comm-id-badge").text(commId !== -1 ? `Community #${commId}` : 'No Cluster Assigned');
-            $("#comm-pr-badge").text(`PageRank: ${prScore}`);
+            $("#comm-table-cluster-badge").text(commId !== -1 ? `Community #${commId}` : 'No Cluster Assigned');
+            $("#comm-table-seed-count").text(`${seedCount} Community Seeds`);
+            $("#comm-table-seed-name").text(comm.members?.[0]?.name || lei);
+            $("#comm-table-dest-count").text(`${dests.length} Destinations`);
 
-            $("#stat-nodes").text(data.stats?.nodeCount || 0);
-            $("#stat-links").text(data.stats?.linkCount || 0);
+            if (dests.length > 0) {
+              $("#comm-table-top-dest").text(dests[0].name);
+              $("#comm-table-top-overlap").text(`Pathways from ${dests[0].connectedSeedCount} / ${seedCount} seeds (${dests[0].connectedPercentage}%)`);
+            } else {
+              $("#comm-table-top-dest").text("--");
+              $("#comm-table-top-overlap").text("--");
+            }
 
-            // Populate overlapping community members roster
+            // Populate Community Member chip list in inspector sidebar
             const members = comm.members || [];
             const listEl = $("#community-members-list");
             listEl.empty();
@@ -1084,10 +1171,93 @@
               displayNodeInInspector(data.seed);
             }
 
-            renderD3Graph(data.nodes || [], data.links || []);
+            // Render Destinations Table sorted by connections DESC
+            const tbody = $("#comm-destinations-body");
+            tbody.empty();
+
+            if (dests.length === 0) {
+              tbody.html('<tr><td colspan="6" class="text-center text-muted py-4">No destinations reachable within the selected hop distance.</td></tr>');
+              return;
+            }
+
+            dests.forEach((dest, idx) => {
+              const drawerId = `connecting-seeds-drawer-${idx}`;
+              const row = $(`
+                <tr>
+                  <td><span class="badge ${dest.rank <= 3 ? 'bg-warning text-dark' : 'bg-secondary'} fw-bold">#${dest.rank}</span></td>
+                  <td>
+                    <div class="d-flex align-items-center gap-2">
+                      <span class="fw-semibold text-white">${dest.name}</span>
+                      ${dest.isCommunityMember ? '<span class="badge bg-purple" style="background:#a855f7;">Community Seed</span>' : ''}
+                    </div>
+                    <div class="lei-code ms-0 mt-1 d-inline-block">${dest.lei}</div>
+                  </td>
+                  <td>
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                      <span class="fw-bold text-info">${dest.connectedSeedCount} / ${dest.totalCommunitySeeds} Seeds</span>
+                      <span class="small text-muted fw-mono">${dest.connectedPercentage}%</span>
+                    </div>
+                    <div class="seed-progress-bar">
+                      <div class="seed-progress-fill" style="width: ${dest.connectedPercentage}%;"></div>
+                    </div>
+                  </td>
+                  <td>
+                    <span class="badge ${dest.minHop === 0 ? 'bg-purple' : 'bg-dark border border-secondary'} text-light">
+                      ${dest.minHop === 0 ? '0 Hop (Seed)' : dest.minHop + ' Hop' + (dest.minHop > 1 ? 's' : '')}
+                    </span>
+                  </td>
+                  <td>
+                    <code class="text-info fw-bold">${(dest.pageRankScore || 0).toFixed(8)}</code>
+                  </td>
+                  <td style="text-align: right;">
+                    <button class="btn btn-outline-secondary btn-sm me-1 toggle-seeds-btn" data-target="${drawerId}">
+                      <i class="fa-solid fa-code-branch me-1"></i> Paths (${dest.connectingSeeds.length})
+                    </button>
+                    <button class="btn btn-outline-info btn-sm open-explorer-btn" data-lei="${dest.lei}" data-name="${dest.name}">
+                      <i class="fa-solid fa-diagram-project me-1"></i> Graph
+                    </button>
+                  </td>
+                </tr>
+                <tr id="${drawerId}" style="display: none; background: rgba(15,23,42,0.6);">
+                  <td colspan="6" class="p-3">
+                    <div class="connecting-seeds-drawer">
+                      <div class="fw-bold text-purple mb-2" style="color:#a855f7;">
+                        <i class="fa-solid fa-sitemap me-1"></i> Community Starting Seeds with Path to ${dest.name} (Sorted by shortest hop):
+                      </div>
+                      <div class="row g-2">
+                        ${dest.connectingSeeds.map(s => `
+                          <div class="col-md-4">
+                            <div class="bg-dark rounded p-2 border border-secondary d-flex justify-content-between align-items-center">
+                              <div class="text-truncate" style="max-width: 200px;" title="${s.name}">
+                                <div class="fw-semibold text-white small">${s.name}</div>
+                                <div class="lei-code ms-0">${s.lei}</div>
+                              </div>
+                              <span class="badge bg-info text-dark">${s.hop} Hop${s.hop > 1 ? 's' : ''}</span>
+                            </div>
+                          </div>
+                        `).join('')}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              `);
+
+              row.find(".toggle-seeds-btn").on("click", function() {
+                $(`#${drawerId}`).toggle();
+              });
+
+              row.find(".open-explorer-btn").on("click", function() {
+                activeLEI = dest.lei;
+                $("#entity-search").val(dest.name);
+                switchViewMode('explorer');
+              });
+
+              tbody.append(row);
+            });
+
           } catch (e) {
-            console.error("Error rendering community graph:", e);
-            alert("Error rendering community graph: " + e.message);
+            console.error("Error rendering community table:", e);
+            alert("Error rendering community reachability table: " + e.message);
           }
         })
         .fail(function(err) {
