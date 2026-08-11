@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LEI Graph Explorer | Spanner Type-Ahead & 3-Hop D3.js Visualization</title>
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- jQuery UI CSS for Autocomplete -->
+  <link rel="stylesheet" href="https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css">
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- D3.js v7 -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <!-- jQuery & jQuery UI -->
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"></script>
+
+  <style>
+    :root {
+      --bg-dark: #0f172a;
+      --bg-panel: #1e293b;
+      --bg-card: #334155;
+      --border-color: #475569;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-seed: #f59e0b;
+      --accent-hop1: #38bdf8;
+      --accent-hop2: #34d399;
+      --accent-hop3: #a855f7;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      margin: 0;
+    }
+
+    /* Top Navigation Toolbar */
+    .top-bar {
+      height: 64px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      gap: 16px;
+      z-index: 100;
+    }
+
+    .brand-title {
+      font-weight: 700;
+      font-size: 1.15rem;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      white-space: nowrap;
+    }
+
+    .typeahead-container {
+      position: relative;
+      flex-grow: 1;
+      max-width: 580px;
+    }
+
+    .search-input {
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      color: #fff !important;
+      border-radius: 8px;
+      padding: 9px 14px 9px 40px;
+      width: 100%;
+      font-size: 0.95rem;
+      transition: all 0.2s ease;
+    }
+
+    .search-input:focus {
+      background: #0b1120;
+      border-color: #38bdf8;
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25);
+      outline: none;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+
+    /* Custom jQuery UI Autocomplete dropdown styling */
+    .ui-autocomplete {
+      background: var(--bg-panel) !important;
+      border: 1px solid var(--border-color) !important;
+      border-radius: 8px !important;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5) !important;
+      max-height: 340px;
+      overflow-y: auto;
+      z-index: 9999 !important;
+      padding: 6px;
+      width: 540px !important;
+    }
+
+    .ui-menu-item-wrapper {
+      color: var(--text-main) !important;
+      padding: 8px 12px !important;
+      border-radius: 6px !important;
+      font-size: 0.88rem !important;
+      cursor: pointer;
+    }
+
+    .ui-state-active, .ui-menu-item-wrapper:hover {
+      background: #334155 !important;
+      border: none !important;
+      color: #38bdf8 !important;
+    }
+
+    .lei-code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+    }
+
+    /* Hop Pills */
+    .hop-selector {
+      display: flex;
+      background: var(--bg-dark);
+      padding: 3px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+    }
+
+    .hop-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 5px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .hop-btn.active {
+      background: #0284c7;
+      color: #fff;
+    }
+
+    /* Split Main Workspace */
+    .main-workspace {
+      display: flex;
+      height: calc(100vh - 64px);
+      width: 100vw;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Left Sidebar */
+    .sidebar {
+      width: 360px;
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      z-index: 10;
+    }
+
+    .sidebar-section {
+      padding: 16px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .section-title {
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Sample Quick Picks */
+    .sample-chip {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      font-size: 0.8rem;
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+      width: 100%;
+      text-align: left;
+      transition: all 0.2s;
+    }
+
+    .sample-chip:hover {
+      border-color: #38bdf8;
+      background: #3e4f66;
+    }
+
+    /* Node Detail Card */
+    .node-detail-card {
+      background: var(--bg-card);
+      border-radius: 8px;
+      padding: 14px;
+      border: 1px solid var(--border-color);
+    }
+
+    .detail-property {
+      margin-bottom: 10px;
+    }
+
+    .detail-label {
+      font-size: 0.73rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    .detail-value {
+      font-size: 0.88rem;
+      font-weight: 500;
+      word-break: break-all;
+    }
+
+    /* Graph Canvas */
+    .graph-container {
+      flex-grow: 1;
+      position: relative;
+      background: #0f172a radial-gradient(#334155 1px, transparent 1px);
+      background-size: 20px 20px;
+      overflow: hidden;
+    }
+
+    svg#d3-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: grab;
+    }
+
+    svg#d3-canvas:active {
+      cursor: grabbing;
+    }
+
+    /* Zoom / Controls Overlay */
+    .graph-toolbar {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: rgba(30, 41, 59, 0.85);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 6px;
+      z-index: 20;
+    }
+
+    .tool-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 6px;
+      background: transparent;
+      border: none;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .tool-btn:hover {
+      background: var(--bg-card);
+      color: #38bdf8;
+    }
+
+    /* Legend Overlay */
+    .legend-box {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      background: rgba(30, 41, 59, 0.88);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px 16px;
+      z-index: 20;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.8rem;
+      margin-bottom: 6px;
+    }
+
+    .legend-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .legend-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    /* Spinner Overlay */
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      z-index: 50;
+    }
+
+    /* Tooltip */
+    .node-tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid #38bdf8;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.8rem;
+      color: #fff;
+      z-index: 100;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+      display: none;
+    }
+
+    .badge-hop-0 { background-color: #f59e0b; color: #000; }
+    .badge-hop-1 { background-color: #38bdf8; color: #000; }
+    .badge-hop-2 { background-color: #34d399; color: #000; }
+    .badge-hop-3 { background-color: #a855f7; color: #fff; }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation & Type-Ahead Search -->
+  <header class="top-bar">
+    <div class="brand-title">
+      <i class="fa-solid fa-diagram-project text-info"></i>
+      <span>LEI Graph 3-Hop Explorer</span>
+    </div>
+
+    <!-- Type-Ahead Autocomplete Input -->
+    <div class="typeahead-container">
+      <i class="fa-solid fa-magnifying-glass search-icon"></i>
+      <input type="text" id="entity-search" class="search-input"
+             placeholder="Type entity name or LEI (e.g. Fidelity, BlackRock, Vanguard...)"
+             autocomplete="off">
+    </div>
+
+    <!-- Hop Depth Selector -->
+    <div class="hop-selector" id="hop-selector">
+      <button class="hop-btn" data-hops="1">1 Hop</button>
+      <button class="hop-btn active" data-hops="2">2 Hops</button>
+      <button class="hop-btn" data-hops="3" title="Note: 3 hops can be query-intensive across large graphs">3 Hops</button>
+    </div>
+
+    <button id="run-query-btn" class="btn btn-primary btn-sm px-3">
+      <i class="fa-solid fa-play me-1"></i> Traverse
+    </button>
+  </header>
+
+  <!-- Split View Workspace -->
+  <div class="main-workspace">
+
+    <!-- Left Sidebar: Controls & Inspector -->
+    <aside class="sidebar">
+
+      <!-- Sample Entities Quick Launcher -->
+      <div class="sidebar-section">
+        <div class="section-title">
+          <span>Quick Example Entities</span>
+          <i class="fa-solid fa-bolt text-warning"></i>
+        </div>
+        <button class="sample-chip" data-lei="001GPB6A9XPE8XJICC14" data-name="Fidelity Advisor Leveraged Company Stock Fund">
+          <i class="fa-solid fa-chart-line text-info me-1"></i>
+          <div>
+            <div class="fw-semibold">Fidelity Advisor Stock Fund</div>
+            <div class="lei-code ms-0">001GPB6A9XPE8XJICC14</div>
+          </div>
+        </button>
+
+        <button class="sample-chip" data-lei="5493001Z012YSB2A0K51" data-name="FIDELITY MANAGEMENT & RESEARCH COMPANY LLC">
+          <i class="fa-solid fa-building text-warning me-1"></i>
+          <div>
+            <div class="fw-semibold">Fidelity Mgmt & Research LLC</div>
+            <div class="lei-code ms-0">5493001Z012YSB2A0K51</div>
+          </div>
+        </button>
+
+        <button class="sample-chip" data-lei="00EHHQ2ZHDCFXJCPCL46" data-name="Fidelity Advisor Floating Rate High Income Fund">
+          <i class="fa-solid fa-coins text-success me-1"></i>
+          <div>
+            <div class="fw-semibold">Fidelity Floating Rate Fund</div>
+            <div class="lei-code ms-0">00EHHQ2ZHDCFXJCPCL46</div>
+          </div>
+        </button>
+      </div>
+
+      <!-- Graph Statistics -->
+      <div class="sidebar-section">
+        <div class="section-title">
+          <span>Traversal Summary</span>
+          <span id="stats-hops" class="badge bg-secondary">2 Hops</span>
+        </div>
+        <div class="row text-center g-2">
+          <div class="col-6">
+            <div class="bg-dark rounded p-2 border border-secondary">
+              <div id="stat-nodes" class="h5 mb-0 text-info fw-bold">0</div>
+              <div class="small text-muted">Nodes Found</div>
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="bg-dark rounded p-2 border border-secondary">
+              <div id="stat-links" class="h5 mb-0 text-warning fw-bold">0</div>
+              <div class="small text-muted">Relationships</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Selected Entity Detail Inspector -->
+      <div class="sidebar-section flex-grow-1">
+        <div class="section-title">
+          <span>Entity Inspector</span>
+          <i class="fa-solid fa-circle-info text-primary"></i>
+        </div>
+
+        <div id="node-inspector-empty" class="text-center text-muted py-4">
+          <i class="fa-solid fa-hand-pointer mb-2 fs-4"></i>
+          <p class="small mb-0">Click any node on the graph to inspect its legal profile and hop path.</p>
+        </div>
+
+        <div id="node-inspector-card" class="node-detail-card" style="display: none;">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span id="inspector-hop-badge" class="badge badge-hop-0">Seed Node</span>
+            <span id="inspector-status-badge" class="badge bg-success">ACTIVE</span>
+          </div>
+
+          <h6 id="inspector-name" class="fw-bold mb-2 text-white">Legal Name Here</h6>
+
+          <div class="detail-property">
+            <div class="detail-label">LEI Identifier</div>
+            <div id="inspector-lei" class="detail-value lei-code ms-0 mt-1 d-inline-block">--</div>
+          </div>
+
+          <div class="detail-property">
+            <div class="detail-label">Entity Category</div>
+            <div id="inspector-category" class="detail-value text-light">--</div>
+          </div>
+
+          <div class="detail-property">
+            <div class="detail-label">Legal Jurisdiction</div>
+            <div id="inspector-jurisdiction" class="detail-value text-light">--</div>
+          </div>
+
+          <div class="detail-property">
+            <div class="detail-label">Registration Status</div>
+            <div id="inspector-reg-status" class="detail-value text-light">--</div>
+          </div>
+
+          <button id="recenter-node-btn" class="btn btn-outline-info btn-sm w-full mt-2">
+            <i class="fa-solid fa-bullseye me-1"></i> Center <span id="recenter-hop-count">2</span>-Hop Traversal on this Entity
+          </button>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- Main Dynamic D3.js Graph Container -->
+    <main class="graph-container">
+
+      <!-- Zoom Toolbar -->
+      <div class="graph-toolbar">
+        <button class="tool-btn" id="zoom-in-btn" title="Zoom In">
+          <i class="fa-solid fa-plus"></i>
+        </button>
+        <button class="tool-btn" id="zoom-out-btn" title="Zoom Out">
+          <i class="fa-solid fa-minus"></i>
+        </button>
+        <button class="tool-btn" id="reset-fit-btn" title="Fit to Screen">
+          <i class="fa-solid fa-expand"></i>
+        </button>
+      </div>
+
+      <!-- Hop Depth Legend -->
+      <div class="legend-box">
+        <div class="section-title mb-2">Hop Distance Legend</div>
+        <div class="legend-item">
+          <span class="legend-dot" style="background: #f59e0b;"></span>
+          <span>Seed Lookup Entity (Hop 0)</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot" style="background: #38bdf8;"></span>
+          <span>1-Hop Connected Entity</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot" style="background: #34d399;"></span>
+          <span>2-Hop Connected Entity</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot" style="background: #a855f7;"></span>
+          <span>3-Hop Connected Entity</span>
+        </div>
+      </div>
+
+      <!-- Loading Overlay -->
+      <div id="loading-spinner" class="loading-overlay">
+        <div class="spinner-border text-info mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+        <h5 class="text-white">Traversing Spanner LEIGraph...</h5>
+        <p class="text-muted small">Executing dynamic multi-hop match in Cloud Spanner</p>
+      </div>
+
+      <!-- Tooltip -->
+      <div id="node-tooltip" class="node-tooltip"></div>
+
+      <!-- D3 SVG Canvas -->
+      <svg id="d3-canvas"></svg>
+
+    </main>
+  </div>
+
+  <!-- JavaScript Application Logic -->
+  <script>
+    let activeLEI = '001GPB6A9XPE8XJICC14';
+    let currentHops = 2;
+    let graphSimulation = null;
+    let zoomBehavior = null;
+
+    // Color mapper for Hop depth
+    const hopColors = {
+      0: '#f59e0b', // Seed Gold
+      1: '#38bdf8', // Hop 1 Cyan
+      2: '#34d399', // Hop 2 Emerald
+      3: '#a855f7'  // Hop 3 Violet
+    };
+
+    $(document).ready(function() {
+
+      // Setup Type-Ahead Autocomplete connected to /autocomplete
+      $("#entity-search").autocomplete({
+        source: function(request, response) {
+          $.getJSON("/autocomplete", { term: request.term }, function(data) {
+            response(data);
+          });
+        },
+        minLength: 2,
+        select: function(event, ui) {
+          activeLEI = ui.item.id;
+          $("#entity-search").val(ui.item.value);
+          loadGraph(activeLEI, currentHops);
+          return false;
+        }
+      }).autocomplete("instance")._renderItem = function(ul, item) {
+        return $("<li>")
+          .append(`<div>
+                    <span class="fw-semibold">${item.value}</span>
+                    <span class="lei-code">${item.id}</span>
+                   </div>`)
+          .appendTo(ul);
+      };
+
+      // Hop depth selector click events
+      $("#hop-selector .hop-btn").on("click", function() {
+        $("#hop-selector .hop-btn").removeClass("active");
+        $(this).addClass("active");
+        currentHops = parseInt($(this).data("hops"));
+        $("#stats-hops").text(currentHops + " Hops");
+        updateInspectorButtonText();
+        loadGraph(activeLEI, currentHops);
+      });
+
+      // Quick Example chips click
+      $(".sample-chip").on("click", function() {
+        const lei = $(this).data("lei");
+        const name = $(this).data("name");
+        activeLEI = lei;
+        $("#entity-search").val(name);
+        loadGraph(lei, currentHops);
+      });
+
+      // Traverse button click
+      $("#run-query-btn").on("click", function() {
+        loadGraph(activeLEI, currentHops);
+      });
+
+      // Recenter button in inspector
+      $("#recenter-node-btn").on("click", function() {
+        const lei = $(this).data("lei");
+        if (lei) {
+          activeLEI = lei;
+          loadGraph(lei, currentHops);
+        }
+      });
+
+      // Zoom Controls
+      $("#zoom-in-btn").on("click", () => {
+        d3.select("#d3-canvas").transition().duration(300).call(zoomBehavior.scaleBy, 1.25);
+      });
+      $("#zoom-out-btn").on("click", () => {
+        d3.select("#d3-canvas").transition().duration(300).call(zoomBehavior.scaleBy, 0.8);
+      });
+      $("#reset-fit-btn").on("click", resetFitView);
+
+      updateInspectorButtonText();
+      // Initial graph load omitted - waiting for user type-ahead lookup or action
+    });
+
+    /**
+     * Load Dynamic Graph from backend API /api/graph
+     */
+    function loadGraph(lei, hops) {
+      $("#loading-spinner").css("display", "flex");
+
+      $.getJSON(`/api/graph?lei=${encodeURIComponent(lei)}&hops=${hops}&limit=150`)
+        .done(function(data) {
+          $("#loading-spinner").hide();
+          try {
+            $("#stat-nodes").text(data.stats?.nodeCount || 0);
+            $("#stat-links").text(data.stats?.linkCount || 0);
+
+            if (data.seed) {
+              displayNodeInInspector(data.seed);
+            }
+
+            renderD3Graph(data.nodes || [], data.links || []);
+          } catch (e) {
+            console.error("Error rendering graph:", e);
+            alert("Error rendering graph canvas: " + e.message);
+          }
+        })
+        .fail(function(err) {
+          $("#loading-spinner").hide();
+          alert("Error loading graph: " + (err.responseJSON?.error || err.statusText));
+        })
+        .always(function() {
+          $("#loading-spinner").hide();
+        });
+    }
+
+    /**
+     * Render Interactive D3.js Force-Directed Graph
+     */
+    function renderD3Graph(nodes, links) {
+      const svg = d3.select("#d3-canvas");
+      svg.selectAll("*").remove();
+
+      const container = svg.append("g");
+
+      const rect = svg.node().getBoundingClientRect();
+      const width = Math.max(800, rect.width || svg.node().clientWidth || 1000);
+      const height = Math.max(600, rect.height || svg.node().clientHeight || 750);
+
+      // Define zoom behavior
+      zoomBehavior = d3.zoom()
+        .scaleExtent([0.15, 4])
+        .on("zoom", (event) => {
+          container.attr("transform", event.transform);
+        });
+
+      svg.call(zoomBehavior);
+      svg.call(zoomBehavior.transform, d3.zoomIdentity);
+
+      // Arrow markers for relationship link direction
+      svg.append("defs").selectAll("marker")
+        .data(["end-arrow"])
+        .enter().append("marker")
+        .attr("id", d => d)
+        .attr("viewBox", "0 -5 10 10")
+        .attr("refX", 22)
+        .attr("refY", 0)
+        .attr("markerWidth", 6)
+        .attr("markerHeight", 6)
+        .attr("orient", "auto")
+        .append("path")
+        .attr("fill", "#64748b")
+        .attr("d", "M0,-5L10,0L0,5");
+
+      // Stop previous force simulation
+      if (graphSimulation) graphSimulation.stop();
+
+      const validIds = new Set(nodes.map(n => n.id));
+      const validLinks = [];
+      links.forEach(l => {
+        const sId = typeof l.source === 'object' ? l.source.id : l.source;
+        const tId = typeof l.target === 'object' ? l.target.id : l.target;
+        if (validIds.has(sId) && validIds.has(tId)) {
+          validLinks.push({
+            source: sId,
+            target: tId,
+            type: l.type || 'IS_RELATED_TO',
+            status: l.status || 'ACTIVE'
+          });
+        }
+      });
+
+      // Initialize clean radial coordinates centered on viewport for each graph render
+      nodes.forEach((n, i) => {
+        delete n.fx;
+        delete n.fy;
+        const angle = (2 * Math.PI * i) / Math.max(1, nodes.length);
+        const radius = n.isSeed ? 0 : (n.hop * 150);
+        n.x = (width / 2) + radius * Math.cos(angle);
+        n.y = (height / 2) + radius * Math.sin(angle);
+      });
+
+      const count = nodes.length;
+      const chargeStrength = count > 60 ? -70 : -220;
+      const linkDist = count > 60 ? 170 : 130;
+
+      graphSimulation = d3.forceSimulation(nodes)
+        .force("link", d3.forceLink(validLinks).id(d => d.id).distance(linkDist))
+        .force("charge", d3.forceManyBody().strength(chargeStrength))
+        .force("center", d3.forceCenter(width / 2, height / 2));
+
+      // Draw Edges (Links)
+      const link = container.append("g")
+        .attr("class", "links")
+        .selectAll("line")
+        .data(validLinks)
+        .enter().append("line")
+        .attr("stroke", "#475569")
+        .attr("stroke-opacity", 0.7)
+        .attr("stroke-width", 1.5)
+        .attr("marker-end", "url(#end-arrow)");
+
+      // Edge relationship labels (visible on link hover)
+      const edgeLabels = container.append("g")
+        .attr("class", "edge-labels")
+        .selectAll("text")
+        .data(validLinks)
+        .enter().append("text")
+        .attr("font-size", "9px")
+        .attr("fill", "#94a3b8")
+        .attr("text-anchor", "middle")
+        .text(d => d.type);
+
+      // Draw Nodes
+      const node = container.append("g")
+        .attr("class", "nodes")
+        .selectAll("g")
+        .data(nodes)
+        .enter().append("g")
+        .attr("cursor", "pointer")
+        .call(d3.drag()
+          .on("start", dragstarted)
+          .on("drag", dragged)
+          .on("end", dragended));
+
+      // Outer halo for seed node
+      node.filter(d => d.isSeed)
+        .append("circle")
+        .attr("r", 18)
+        .attr("fill", "none")
+        .attr("stroke", "#f59e0b")
+        .attr("stroke-width", 2)
+        .attr("stroke-dasharray", "4,2");
+
+      // Node circle
+      node.append("circle")
+        .attr("r", d => d.isSeed ? 14 : Math.max(9, 13 - d.hop * 1.5))
+        .attr("fill", d => hopColors[d.hop] || "#94a3b8")
+        .attr("stroke", "#0f172a")
+        .attr("stroke-width", 2);
+
+      // Node label (truncated for readability)
+      node.append("text")
+        .attr("dx", 15)
+        .attr("dy", ".35em")
+        .attr("font-size", d => d.isSeed ? "12px" : "10px")
+        .attr("font-weight", d => d.isSeed ? "700" : "500")
+        .attr("fill", d => d.isSeed ? "#f59e0b" : "#f8fafc")
+        .text(d => {
+          const labelText = String(d.name || d.id || "");
+          return labelText.length > 28 ? labelText.substring(0, 26) + "..." : labelText;
+        });
+
+      // Node Tooltips & Hover Highlighting
+      node.on("mouseover", function(event, d) {
+        // Highlight connected links
+        const connectedIds = new Set();
+        connectedIds.add(d.id);
+
+        link.attr("stroke", l => {
+          const sId = typeof l.source === 'object' ? l.source.id : l.source;
+          const tId = typeof l.target === 'object' ? l.target.id : l.target;
+          if (sId === d.id || tId === d.id) {
+            connectedIds.add(sId);
+            connectedIds.add(tId);
+            return "#38bdf8";
+          }
+          return "#1e293b";
+        }).attr("stroke-opacity", l => {
+          const sId = typeof l.source === 'object' ? l.source.id : l.source;
+          const tId = typeof l.target === 'object' ? l.target.id : l.target;
+          return (sId === d.id || tId === d.id) ? 1 : 0.15;
+        });
+
+        node.attr("opacity", n => connectedIds.has(n.id) ? 1 : 0.25);
+
+        // Tooltip
+        $("#node-tooltip")
+          .html(`<strong>${d.name}</strong><br>` +
+                `<span class="text-muted">Hop Distance:</span> <strong>${d.hop}</strong><br>` +
+                `<span class="text-muted">LEI:</span> ${d.lei}`)
+          .style("left", (event.pageX + 12) + "px")
+          .style("top", (event.pageY - 10) + "px")
+          .show();
+      })
+      .on("mouseout", function() {
+        link.attr("stroke", "#475569").attr("stroke-opacity", 0.7);
+        node.attr("opacity", 1);
+        $("#node-tooltip").hide();
+      })
+      .on("click", function(event, d) {
+        displayNodeInInspector(d);
+      });
+
+      // Tick Simulation update
+      graphSimulation.on("tick", () => {
+        link
+          .attr("x1", d => d.source.x)
+          .attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x)
+          .attr("y2", d => d.target.y);
+
+        edgeLabels
+          .attr("x", d => (d.source.x + d.target.x) / 2)
+          .attr("y", d => (d.source.y + d.target.y) / 2 - 4);
+
+        node.attr("transform", d => `translate(${d.x},${d.y})`);
+      });
+
+      // Let force simulation settle cleanly in viewport center
+    }
+
+    function resetFitView() {
+      const svg = d3.select("#d3-canvas");
+      svg.transition().duration(400).call(
+        zoomBehavior.transform,
+        d3.zoomIdentity
+      );
+    }
+
+    function dragstarted(event, d) {
+      if (!event.active) graphSimulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
+
+    function dragged(event, d) {
+      d.fx = event.x;
+      d.fy = event.y;
+    }
+
+    function dragended(event, d) {
+      if (!event.active) graphSimulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
+
+    function updateInspectorButtonText() {
+      $("#recenter-hop-count").text(currentHops);
+      $("#recenter-node-btn").html(`<i class="fa-solid fa-bullseye me-1"></i> Center ${currentHops}-Hop Traversal on this Entity`);
+    }
+
+    /**
+     * Inspect detailed node attributes in Left Sidebar
+     */
+    function displayNodeInInspector(node) {
+      $("#node-inspector-empty").hide();
+      $("#node-inspector-card").show();
+
+      $("#inspector-name").text(node.name || node.id);
+      $("#inspector-lei").text(node.lei || node.id);
+      $("#inspector-category").text(node.category || "ENTITY");
+      $("#inspector-jurisdiction").text(node.jurisdiction || "N/A");
+      $("#inspector-reg-status").text(node.regStatus || "ACTIVE");
+
+      const badge = $("#inspector-hop-badge");
+      badge.removeClass("badge-hop-0 badge-hop-1 badge-hop-2 badge-hop-3");
+      badge.addClass("badge-hop-" + (node.hop || 0));
+      badge.text(node.hop === 0 ? "Seed Node (Hop 0)" : `Connected (Hop ${node.hop})`);
+
+      $("#recenter-node-btn").data("lei", node.lei || node.id);
+      updateInspectorButtonText();
+    }
+  </script>
+</body>
+</html>

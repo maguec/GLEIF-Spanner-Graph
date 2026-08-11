@@ -9,4 +9,5 @@ dependencies = [
     "s2sphere>=0.2.5",
     "geopy>=2.4.0",
     "python-dotenv>=1.0.0",
+    "flask>=3.0.0",
 ]
