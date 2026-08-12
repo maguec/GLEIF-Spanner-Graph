@@ -60,6 +60,25 @@ EXPORT DATA OPTIONS (
   write_mode = 'upsert_ignore_all'
 ) AS
 GRAPH LEIGraph
+CALL PageRank(
+    node_labels => ['Entity'],
+    edge_labels => ['IS_RELATED_TO'],
+    damping_factor => 0.85,
+    max_iterations => 20
+) YIELD node, score
+RETURN 
+    node.LEI AS LEI,
+    score AS PageRankScore;
+```
+
+### Run the Modularity Community Detection Algorithm
+```sql
+EXPORT DATA OPTIONS (
+  format = "CLOUD_SPANNER",
+  table = "EntityGraphAnalytics",
+  write_mode = 'upsert_ignore_all'
+) AS
+GRAPH LEIGraph
 CALL ModularityClustering(
     node_labels => ['Entity'],
     edge_labels => ['IS_RELATED_TO'],
@@ -67,7 +86,7 @@ CALL ModularityClustering(
 ) YIELD node, cluster
 RETURN 
     node.LEI AS LEI,
-    cluster AS CommunityId
+    cluster AS CommunityId;
 ```
 
 ### Run the Jaccard Community Detection Algorithm

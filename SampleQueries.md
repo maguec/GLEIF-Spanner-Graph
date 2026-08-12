@@ -609,6 +609,75 @@ FROM GRAPH_TABLE(
 ) AS g;
 ```
 
+---
 
+## Query 16: 2-Deep Entity Neighborhood Traversal with PageRank Centrality Ranking
 
+### Business Scenario
+Starting from a given seed entity (e.g. `PE Capital XI` `529900EGRFQDZFSHYN17`), traverse up to 2 hops deep across `IS_RELATED_TO` edges to identify all 1-hop direct and 2-hop indirect counterparties and subsidiaries, ranked by their precalculated `PageRankScore`.
 
+### How It Works
+Combines 1-hop and 2-hop `GRAPH_TABLE` pattern matches (`(src)-[r]->(tgt)` and `(src)-[r1]->(mid)-[r2]->(tgt)`) in a CTE, performs deduplication with `MIN(HopDistance)`, and joins with `EntityGraphAnalytics` to order connected entities by network importance (`PageRankScore DESC`).
+
+```sql
+WITH TwoDeepNetwork AS (
+    -- 1-Hop Connected Entities
+    SELECT 
+        g1.DestLEI,
+        g1.DestName,
+        g1.EntityCategory,
+        g1.LegalJurisdiction,
+        g1.RelationshipType AS PathDescription,
+        1 AS HopDistance
+    FROM GRAPH_TABLE(
+        LEIGraph
+        MATCH (src:Entity)-[r:IS_RELATED_TO]->(dest:Entity)
+        WHERE src.LEI = '529900EGRFQDZFSHYN17'  -- Starting Seed Entity: PE Capital XI
+        COLUMNS (
+            dest.LEI AS DestLEI,
+            dest.LegalName AS DestName,
+            dest.EntityCategory AS EntityCategory,
+            dest.LegalJurisdiction AS LegalJurisdiction,
+            r.RelationshipType AS RelationshipType
+        )
+    ) AS g1
+
+    UNION DISTINCT
+
+    -- 2-Hop Connected Entities
+    SELECT 
+        g2.DestLEI,
+        g2.DestName,
+        g2.EntityCategory,
+        g2.LegalJurisdiction,
+        CONCAT(g2.Rel1, ' -> ', g2.Rel2) AS PathDescription,
+        2 AS HopDistance
+    FROM GRAPH_TABLE(
+        LEIGraph
+        MATCH (src:Entity)-[r1:IS_RELATED_TO]->(mid:Entity)-[r2:IS_RELATED_TO]->(dest:Entity)
+        WHERE src.LEI = '529900EGRFQDZFSHYN17'  -- Starting Seed Entity: PE Capital XI
+          AND dest.LEI != '529900EGRFQDZFSHYN17'
+        COLUMNS (
+            dest.LEI AS DestLEI,
+            dest.LegalName AS DestName,
+            dest.EntityCategory AS EntityCategory,
+            dest.LegalJurisdiction AS LegalJurisdiction,
+            r1.RelationshipType AS Rel1,
+            r2.RelationshipType AS Rel2
+        )
+    ) AS g2
+)
+SELECT 
+    n.DestLEI AS LEI,
+    n.DestName AS LegalName,
+    n.EntityCategory,
+    n.LegalJurisdiction,
+    MIN(n.HopDistance) AS MinHopDistance,
+    ANY_VALUE(n.PathDescription) AS SamplePath,
+    COALESCE(a.PageRankScore, 0.0) AS PageRankScore,
+    a.CommunityId
+FROM TwoDeepNetwork AS n
+LEFT JOIN EntityGraphAnalytics AS a ON n.DestLEI = a.LEI
+GROUP BY n.DestLEI, n.DestName, n.EntityCategory, n.LegalJurisdiction, a.PageRankScore, a.CommunityId
+ORDER BY MinHopDistance ASC, PageRankScore DESC;
+```
