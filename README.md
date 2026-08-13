@@ -107,6 +107,13 @@ RETURN
     cluster AS JaccardCommunityId;
 ```
 
+## Running the application
+
+```bash
+uv run app.py
+```
+
+Connect to the [local webserver](http://127.0.0.1:5001)
 
 ## Querying data
 
