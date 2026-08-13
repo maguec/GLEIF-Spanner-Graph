@@ -175,50 +175,30 @@ def _pure_python_s2_cell(lat_deg: float, lng_deg: float, level: int) -> Tuple[in
 
 GRAPH_TABLE_QUERY = """
 SELECT
-    g.LEI,
-    g.LegalName,
-    g.EntityStatus,
-    g.RelationshipType,
-    g.AddressType,
-    g.FirstAddressLine,
-    g.City,
-    g.Region,
-    g.Country,
-    g.PostalCode,
-    g.Latitude,
-    g.Longitude,
+    e.LEI,
+    e.LegalName,
+    e.EntityStatus,
+    l.AddressType,
+    l.FirstAddressLine,
+    l.City,
+    l.Region,
+    l.Country,
+    l.PostalCode,
+    l.Latitude,
+    l.Longitude,
     -- Geodesic Haversine distance in kilometers (Earth radius: ~6,371.0088 km, deg-to-rad: 0.017453292519943295)
     ROUND(
         6371.0088 * 2 * ASIN(
             SQRT(
-                POW(SIN((g.Latitude - @target_lat) * 0.017453292519943295 / 2), 2) +
-                COS(@target_lat * 0.017453292519943295) * COS(g.Latitude * 0.017453292519943295) *
-                POW(SIN((g.Longitude - @target_lng) * 0.017453292519943295 / 2), 2)
+                POW(SIN((l.Latitude - @target_lat) * 0.017453292519943295 / 2), 2) +
+                COS(@target_lat * 0.017453292519943295) * COS(l.Latitude * 0.017453292519943295) *
+                POW(SIN((l.Longitude - @target_lng) * 0.017453292519943295 / 2), 2)
             )
         ), 3
     ) AS distance_km
-FROM LocationS2Tokens AS t
-JOIN GRAPH_TABLE(
-    LEIGraph
-    MATCH (e:Entity)-[r:HAS_LOCATION]->(l:Location)
-    COLUMNS (
-        e.LEI,
-        e.LegalName,
-        e.EntityStatus,
-        r.RelationshipType,
-        l.LocationId,
-        l.AddressType,
-        l.FirstAddressLine,
-        l.City,
-        l.Region,
-        l.Country,
-        l.PostalCode,
-        l.Latitude,
-        l.Longitude,
-        l.S2CellId,
-        l.S2TokenStr
-    )
-) AS g ON t.LocationId = g.LocationId
+FROM LocationS2Tokens@{FORCE_INDEX=IndexLocationS2TokensByToken} AS t
+JOIN EntityLocations AS l ON t.LocationId = l.LocationId
+JOIN Entities AS e ON l.LEI = e.LEI
 WHERE t.S2Level = @s2_level
   AND t.S2Token = @s2_token
 ORDER BY distance_km ASC
@@ -467,12 +447,12 @@ def main():
         display_headers = [
             "LEI",
             "LegalName",
+            "AddressType",
             "City",
             "Region",
             "Country",
             "distance_km",
             "distance_mi",
-            "RelationshipType",
         ]
         print_table(rows, display_headers)
 
