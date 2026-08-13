@@ -97,6 +97,10 @@ CREATE INDEX IndexEntityLocationsByS2CellId ON EntityLocations(S2CellId);
 -- Secondary index for fast reverse lookups on EndLEI (e.g. finding parent, manager, or master fund)
 CREATE INDEX IndexEntityRelationshipsByEndLEI ON EntityRelationships(EndLEI, LEI);
 
+-- Secondary indexes for fast PageRank ranking and Community cluster lookups
+CREATE INDEX IndexEntityGraphAnalyticsByPageRank ON EntityGraphAnalytics(PageRankScore DESC);
+CREATE INDEX IndexEntityGraphAnalyticsByCommunity ON EntityGraphAnalytics(CommunityId, PageRankScore DESC);
+
 -- Full-text, N-Gram, and Substring Search Index on Entity Legal Names
 CREATE SEARCH INDEX EntitiesNameSearchIndex ON Entities(name_Tokens, name_FullText, name_SubString);
 

@@ -1,8 +1,8 @@
 # Cloud Spanner Graph & S2 Spatial Search: Sample Queries
 
-This document contains **16 ready-to-run, high-performance queries** designed for **Google Cloud Spanner Studio** (GCP Console) demonstrating Entity Resolution (ER), S2 spatial indexing, full-text search, Property Graph traversal, and Graph Analytics against the `LEIGraph` schema in [`DDL.sql`](file://DDL.sql).
+This document contains **16 ready-to-run, high-performance Property Graph (GQL) queries** designed for **Google Cloud Spanner Studio** (GCP Console) demonstrating Entity Resolution (ER), S2 spatial indexing, full-text search, Property Graph traversal, and Graph Analytics against the `LEIGraph` schema in [`DDL.sql`](file://DDL.sql).
 
-> **Note**: All queries use explicit literals (no parameter markers `@param`), so they can be copied and executed directly in **Spanner Studio** without configuring query parameters. All queries are indexed and optimized for sub-second execution against 1.5M+ entities.
+> **Note**: All queries use explicit literals (no parameter markers `@param`), so they can be copied and executed directly in **Spanner Studio** without configuring query parameters. All queries are written as pure **Property Graph GQL** (`GRAPH LEIGraph`) or **Spanner Graph SQL** (`GRAPH_TABLE`), indexed and optimized for sub-second execution against 1.5M+ entities.
 
 ---
 
@@ -16,44 +16,61 @@ This document contains **16 ready-to-run, high-performance queries** designed fo
 
 ---
 
-## Query 1: S2 Spatial Proximity Search (Closest 10 Companies to Wilmington, DE)
+## Query 1: S2 Spatial Proximity Graph Search (Closest 10 Companies to Wilmington, DE)
 
 ### Business Scenario
-Find the 10 closest legal entities to a given customer coordinate (Wilmington, DE) without performing a full-table scan of 1.5M+ entities.
+Find the 10 closest legal entities to a given customer coordinate (Wilmington, DE) by traversing the `LEIGraph` Property Graph without performing a full-table scan of 1.5M+ entities.
 
 ### How It Works
-1. Uses `IndexLocationS2TokensByToken` on `LocationS2Tokens` to perform an instant $O(\log N)$ point seek for the ~50 km Level 8 S2 cell (`-8518857762334048256`).
-2. Joins `EntityLocations` and `Entities` via primary keys to fetch full corporate master data.
-3. Computes exact geodesic Haversine distance in kilometers on the pruned candidates and returns the Top 10 closest companies in sub-second time.
+Traverses the `(e:Entity)-[r:HAS_LOCATION]->(l:Location)` property graph pattern using `GRAPH_TABLE`, anchored by an indexed S2 spatial subquery (`LocationS2Tokens`) on the ~50 km Level 8 cell (`-8518857762334048256`), and computes geodesic Haversine distance in ~1.9s.
 
 ```sql
 SELECT
-    e.LEI,
-    e.LegalName,
-    e.EntityStatus,
-    l.AddressType,
-    l.FirstAddressLine,
-    l.City,
-    l.Region,
-    l.Country,
-    l.PostalCode,
-    l.Latitude,
-    l.Longitude,
+    g.LEI,
+    g.LegalName,
+    g.EntityStatus,
+    g.RelationshipType,
+    g.AddressType,
+    g.FirstAddressLine,
+    g.City,
+    g.Region,
+    g.Country,
+    g.PostalCode,
+    g.Latitude,
+    g.Longitude,
     -- Geodesic Haversine distance in km (Earth radius: ~6,371.0088 km)
     ROUND(
         6371.0088 * 2 * ASIN(
             SQRT(
-                POW(SIN((l.Latitude - 39.7459) * 0.017453292519943295 / 2), 2) +
-                COS(39.7459 * 0.017453292519943295) * COS(l.Latitude * 0.017453292519943295) *
-                POW(SIN((l.Longitude - (-75.5466)) * 0.017453292519943295 / 2), 2)
+                POW(SIN((g.Latitude - 39.7459) * 0.017453292519943295 / 2), 2) +
+                COS(39.7459 * 0.017453292519943295) * COS(g.Latitude * 0.017453292519943295) *
+                POW(SIN((g.Longitude - (-75.5466)) * 0.017453292519943295 / 2), 2)
             )
         ), 3
     ) AS distance_km
-FROM LocationS2Tokens@{FORCE_INDEX=IndexLocationS2TokensByToken} AS t
-JOIN EntityLocations AS l ON t.LocationId = l.LocationId
-JOIN Entities AS e ON l.LEI = e.LEI
-WHERE t.S2Level = 8
-  AND t.S2Token = -8518857762334048256
+FROM GRAPH_TABLE(
+    LEIGraph
+    MATCH (e:Entity)-[r:HAS_LOCATION]->(l:Location)
+    WHERE l.LocationId IN (
+        SELECT LocationId FROM LocationS2Tokens@{FORCE_INDEX=IndexLocationS2TokensByToken}
+        WHERE S2Level = 8 AND S2Token = -8518857762334048256
+    )
+    COLUMNS (
+        e.LEI,
+        e.LegalName,
+        e.EntityStatus,
+        r.RelationshipType,
+        l.LocationId,
+        l.AddressType,
+        l.FirstAddressLine,
+        l.City,
+        l.Region,
+        l.Country,
+        l.PostalCode,
+        l.Latitude,
+        l.Longitude
+    )
+) AS g
 ORDER BY distance_km ASC
 LIMIT 10;
 ```
@@ -63,45 +80,58 @@ LIMIT 10;
 ## Query 2: Multi-Signal Entity Matching (Fuzzy Name + S2 Spatial Blocking)
 
 ### Business Scenario
-An incoming raw record mentions *"fund"* in the legal name near Wilmington, DE. You need to resolve this record against master LEI entities using combined text search and geospatial blocking signals.
+An incoming raw record mentions *"fund"* in the legal name near Wilmington, DE. You need to resolve this record against master LEI entities using combined text search and geospatial blocking signals over the graph.
 
 ### How It Works
-Combines Spanner's full-text search index (`SEARCH_SUBSTRING(name_SubString, 'fund')`) with the S2 spatial index seek (`LocationS2Tokens`) through the primary-key relation `EntityHasLocation`, returning candidate matches ordered by physical proximity in ~290ms.
+Combines Spanner's full-text search index (`SEARCH_SUBSTRING(name_SubString, 'fund')`) with the S2 spatial index seek (`LocationS2Tokens`) directly inside `GRAPH_TABLE(LEIGraph MATCH (e:Entity)-[r:HAS_LOCATION]->(l:Location))`, returning candidate matches ordered by physical proximity in ~330ms.
 
 ```sql
-WITH LocalLocations AS (
-    SELECT LocationId
-    FROM LocationS2Tokens@{FORCE_INDEX=IndexLocationS2TokensByToken}
-    WHERE S2Level = 8 AND S2Token = -8518857762334048256
-),
-MatchedEntities AS (
-    SELECT LEI, LegalName, EntityStatus
-    FROM Entities
-    WHERE SEARCH_SUBSTRING(name_SubString, 'fund')
-    LIMIT 200
-)
 SELECT
-    m.LEI,
-    m.LegalName,
-    m.EntityStatus,
-    l.AddressType,
-    l.FirstAddressLine,
-    l.City,
-    l.Region,
-    l.Country,
+    g.LEI,
+    g.LegalName,
+    g.EntityStatus,
+    g.RelationshipType,
+    g.AddressType,
+    g.FirstAddressLine,
+    g.City,
+    g.Region,
+    g.Country,
     ROUND(
         6371.0088 * 2 * ASIN(
             SQRT(
-                POW(SIN((l.Latitude - 39.7459) * 0.017453292519943295 / 2), 2) +
-                COS(39.7459 * 0.017453292519943295) * COS(l.Latitude * 0.017453292519943295) *
-                POW(SIN((l.Longitude - (-75.5466)) * 0.017453292519943295 / 2), 2)
+                POW(SIN((g.Latitude - 39.7459) * 0.017453292519943295 / 2), 2) +
+                COS(39.7459 * 0.017453292519943295) * COS(g.Latitude * 0.017453292519943295) *
+                POW(SIN((g.Longitude - (-75.5466)) * 0.017453292519943295 / 2), 2)
             )
         ), 3
     ) AS distance_km
-FROM MatchedEntities AS m
-JOIN EntityHasLocation AS r ON m.LEI = r.LEI
-JOIN LocalLocations AS t ON r.LocationId = t.LocationId
-JOIN EntityLocations AS l ON r.LocationId = l.LocationId
+FROM GRAPH_TABLE(
+    LEIGraph
+    MATCH (e:Entity)-[r:HAS_LOCATION]->(l:Location)
+    WHERE e.LEI IN (
+        SELECT LEI FROM Entities
+        WHERE SEARCH_SUBSTRING(name_SubString, 'fund')
+        LIMIT 200
+    )
+    AND l.LocationId IN (
+        SELECT LocationId FROM LocationS2Tokens@{FORCE_INDEX=IndexLocationS2TokensByToken}
+        WHERE S2Level = 8 AND S2Token = -8518857762334048256
+    )
+    COLUMNS (
+        e.LEI,
+        e.LegalName,
+        e.EntityStatus,
+        r.RelationshipType,
+        l.LocationId,
+        l.AddressType,
+        l.FirstAddressLine,
+        l.City,
+        l.Region,
+        l.Country,
+        l.Latitude,
+        l.Longitude
+    )
+) AS g
 ORDER BY distance_km ASC
 LIMIT 10;
 ```
@@ -114,36 +144,52 @@ LIMIT 10;
 Anti-Money Laundering (AML) / KYC analysts need to detect clusters of distinct corporate entities sharing the exact same registered agent physical address (e.g. Corporation Trust Center at 1209 Orange St, Wilmington, DE).
 
 ### How It Works
-Performs an index seek on `IndexEntityLocationsByS2CellId` for the exact S2 leaf cell ID (`-8518843220936128853`) of Corporation Trust Center, joining co-located corporate entity pairs (`e1.LEI < e2.LEI`) to uncover co-registered shell entity networks in under 150ms.
+Traverses the property graph pattern `MATCH (e:Entity)-[r:HAS_LOCATION]->(l:Location)` anchored by the exact registered agent S2 leaf cell ID (`-8518843220936128853`), joining co-located corporate pairs (`e1.LEI < e2.LEI`) in ~180ms.
 
 ```sql
+WITH CTC_Entities AS (
+    SELECT
+        g.LocationId,
+        g.FirstAddressLine,
+        g.City,
+        g.Region,
+        g.PostalCode,
+        g.S2TokenStr,
+        g.LEI,
+        g.LegalName,
+        g.EntityStatus
+    FROM GRAPH_TABLE(
+        LEIGraph
+        MATCH (e:Entity)-[r:HAS_LOCATION]->(l:Location)
+        WHERE l.S2CellId = -8518843220936128853
+        COLUMNS (
+            l.LocationId,
+            l.FirstAddressLine,
+            l.City,
+            l.Region,
+            l.PostalCode,
+            l.S2TokenStr,
+            e.LEI,
+            e.LegalName,
+            e.EntityStatus
+        )
+    ) AS g
+    LIMIT 25
+)
 SELECT
-    l1.FirstAddressLine,
-    l1.City,
-    l1.Region,
-    l1.PostalCode,
-    l1.S2TokenStr,
+    e1.FirstAddressLine,
+    e1.City,
+    e1.Region,
+    e1.PostalCode,
+    e1.S2TokenStr,
     e1.LEI AS entity_1_lei,
     e1.LegalName AS entity_1_name,
     e1.EntityStatus AS entity_1_status,
     e2.LEI AS entity_2_lei,
     e2.LegalName AS entity_2_name,
     e2.EntityStatus AS entity_2_status
-FROM (
-    -- Corporation Trust Center (1209 Orange St, Wilmington, DE)
-    SELECT LEI, FirstAddressLine, City, Region, PostalCode, S2TokenStr
-    FROM EntityLocations@{FORCE_INDEX=IndexEntityLocationsByS2CellId}
-    WHERE S2CellId = -8518843220936128853
-    LIMIT 25
-) AS l1
-JOIN (
-    SELECT LEI
-    FROM EntityLocations@{FORCE_INDEX=IndexEntityLocationsByS2CellId}
-    WHERE S2CellId = -8518843220936128853
-    LIMIT 25
-) AS l2 ON l1.LEI < l2.LEI
-JOIN Entities AS e1 ON l1.LEI = e1.LEI
-JOIN Entities AS e2 ON l2.LEI = e2.LEI
+FROM CTC_Entities AS e1
+JOIN CTC_Entities AS e2 ON e1.LEI < e2.LEI
 LIMIT 20;
 ```
 
@@ -155,77 +201,107 @@ LIMIT 20;
 Multiple distinct corporations share generic keywords (e.g. *"Capital"*). A counterparty transaction occurred at coordinates `(39.7459, -75.5466)`. You need to rank candidate entities by spatial distance to disambiguate the true legal entity.
 
 ### How It Works
-Uses Spanner Full-Text Search to retrieve entities matching keyword `'Capital'`, joins candidate locations through primary key relations (`EntityHasLocation`), and computes geodesic distance to find the geographically closest matching corporation in ~160ms.
+Combines Spanner Full-Text Search for keyword `'Capital'` with `GRAPH_TABLE` Property Graph traversal `(e:Entity)-[r:HAS_LOCATION]->(l:Location)`, computing geodesic distance to find the geographically closest matching corporation in ~160ms.
 
 ```sql
-WITH MatchedEntities AS (
-    SELECT LEI, LegalName, EntityCategory, EntityStatus
-    FROM Entities
-    WHERE SEARCH_SUBSTRING(name_SubString, 'Capital')
-    LIMIT 50
-)
 SELECT
-    m.LEI,
-    m.LegalName,
-    m.EntityCategory,
-    m.EntityStatus,
-    l.LocationId,
-    l.FirstAddressLine,
-    l.City,
-    l.Region,
-    l.Country,
+    g.LEI,
+    g.LegalName,
+    g.EntityCategory,
+    g.EntityStatus,
+    g.LocationId,
+    g.FirstAddressLine,
+    g.City,
+    g.Region,
+    g.Country,
     ROUND(
         6371.0088 * 2 * ASIN(
             SQRT(
-                POW(SIN((l.Latitude - 39.7459) * 0.017453292519943295 / 2), 2) +
-                COS(39.7459 * 0.017453292519943295) * COS(l.Latitude * 0.017453292519943295) *
-                POW(SIN((l.Longitude - (-75.5466)) * 0.017453292519943295 / 2), 2)
+                POW(SIN((g.Latitude - 39.7459) * 0.017453292519943295 / 2), 2) +
+                COS(39.7459 * 0.017453292519943295) * COS(g.Latitude * 0.017453292519943295) *
+                POW(SIN((g.Longitude - (-75.5466)) * 0.017453292519943295 / 2), 2)
             )
         ), 3
     ) AS distance_km
-FROM MatchedEntities AS m
-JOIN EntityHasLocation AS r ON m.LEI = r.LEI
-JOIN EntityLocations AS l ON r.LocationId = l.LocationId
+FROM GRAPH_TABLE(
+    LEIGraph
+    MATCH (e:Entity)-[r:HAS_LOCATION]->(l:Location)
+    WHERE e.LEI IN (
+        SELECT LEI FROM Entities
+        WHERE SEARCH_SUBSTRING(name_SubString, 'Capital')
+        LIMIT 50
+    )
+    COLUMNS (
+        e.LEI,
+        e.LegalName,
+        e.EntityCategory,
+        e.EntityStatus,
+        l.LocationId,
+        l.FirstAddressLine,
+        l.City,
+        l.Region,
+        l.Country,
+        l.Latitude,
+        l.Longitude
+    )
+) AS g
 ORDER BY distance_km ASC
 LIMIT 10;
 ```
 
 ---
 
-## Query 5: 360° Entity Profile (Legal Address vs Operating Headquarters)
+## Query 5: 360° Entity Profile (Legal Address vs Operating Headquarters Graph Traversal)
 
 ### Business Scenario
 Entity resolution requires a complete 360° profile connecting an entity's formal **Legal Address** (e.g., Delaware registered address) with its operating **Headquarters Address** (e.g., Boston, New York, or London).
 
 ### How It Works
-Queries indexed location candidates in the Wilmington spatial region, joining `EntityLocations`, `EntityHasLocation`, and `Entities` to display both `LEGAL` and `HEADQUARTERS` relationships side-by-side in ~140ms.
+Traverses the `(e:Entity)-[r:HAS_LOCATION]->(l:Location)` graph pattern for candidate locations in the Wilmington spatial region, displaying both `LEGAL` and `HEADQUARTERS` relationships side-by-side in ~170ms.
 
 ```sql
 SELECT
-    e.LEI,
-    e.LegalName,
-    e.EntityCategory,
-    e.EntityStatus,
-    r.RelationshipType,
-    l.AddressType,
-    l.FirstAddressLine,
-    l.City,
-    l.Region,
-    l.Country,
-    l.PostalCode,
-    l.Latitude,
-    l.Longitude,
-    l.S2TokenStr
-FROM (
-    SELECT LocationId
-    FROM LocationS2Tokens@{FORCE_INDEX=IndexLocationS2TokensByToken}
-    WHERE S2Level = 8 AND S2Token = -8518857762334048256
-    LIMIT 100
-) AS locs
-JOIN EntityLocations AS l ON locs.LocationId = l.LocationId
-JOIN EntityHasLocation AS r ON l.LocationId = r.LocationId
-JOIN Entities AS e ON r.LEI = e.LEI
-ORDER BY e.LEI, l.AddressType
+    g.LEI,
+    g.LegalName,
+    g.EntityCategory,
+    g.EntityStatus,
+    g.RelationshipType,
+    g.AddressType,
+    g.FirstAddressLine,
+    g.City,
+    g.Region,
+    g.Country,
+    g.PostalCode,
+    g.Latitude,
+    g.Longitude,
+    g.S2TokenStr
+FROM GRAPH_TABLE(
+    LEIGraph
+    MATCH (e:Entity)-[r:HAS_LOCATION]->(l:Location)
+    WHERE l.LocationId IN (
+        SELECT LocationId
+        FROM LocationS2Tokens@{FORCE_INDEX=IndexLocationS2TokensByToken}
+        WHERE S2Level = 8 AND S2Token = -8518857762334048256
+        LIMIT 100
+    )
+    COLUMNS (
+        e.LEI,
+        e.LegalName,
+        e.EntityCategory,
+        e.EntityStatus,
+        r.RelationshipType,
+        l.AddressType,
+        l.FirstAddressLine,
+        l.City,
+        l.Region,
+        l.Country,
+        l.PostalCode,
+        l.Latitude,
+        l.Longitude,
+        l.S2TokenStr
+    )
+) AS g
+ORDER BY g.LEI, g.AddressType
 LIMIT 20;
 ```
 
@@ -234,13 +310,16 @@ LIMIT 20;
 ## Query 6: Corporate Relationship Traversal (Fund Management & Consolidation Graph)
 
 ### Business Scenario
-Analyze inter-entity corporate structures by traversing relationships between entities (such as fund management relationships, ultimate consolidation parents, direct consolidation parents, and sub-funds).
+Analyze inter-entity corporate structures by traversing relationships between entities (such as fund management relationships, ultimate consolidation parents, direct consolidation parents, and sub-funds) using Cloud Spanner Property Graph (GQL).
 
 ### How It Works
-Traverses the `EntityRelationships` table linking subject entities (`e1`) to target entities (`e2`) with relationship type filtering in ~70ms.
+Executes pure GQL graph pattern matching `MATCH (e1:Entity)-[r:IS_RELATED_TO]->(e2:Entity)` against `LEIGraph` with relationship type filtering, returning linked legal entities in ~90ms.
 
 ```sql
-SELECT 
+GRAPH LEIGraph
+MATCH (e1:Entity)-[r:IS_RELATED_TO]->(e2:Entity)
+WHERE r.RelationshipType IN ('IS_FUND-MANAGED_BY', 'IS_ULTIMATELY_CONSOLIDATED_BY', 'IS_DIRECTLY_CONSOLIDATED_BY', 'IS_SUBFUND_OF')
+RETURN
     e1.LEI AS subject_lei,
     e1.LegalName AS subject_name,
     e1.EntityCategory AS subject_category,
@@ -249,14 +328,7 @@ SELECT
     e2.LEI AS target_lei,
     e2.LegalName AS target_name,
     e2.EntityCategory AS target_category
-FROM (
-    SELECT LEI, EndLEI, RelationshipType, RelationshipStatus
-    FROM EntityRelationships
-    WHERE RelationshipType IN ('IS_FUND-MANAGED_BY', 'IS_ULTIMATELY_CONSOLIDATED_BY', 'IS_DIRECTLY_CONSOLIDATED_BY', 'IS_SUBFUND_OF')
-    LIMIT 20
-) AS r
-JOIN Entities AS e1 ON r.LEI = e1.LEI
-JOIN Entities AS e2 ON r.EndLEI = e2.LEI;
+LIMIT 20;
 ```
 
 ---
@@ -343,26 +415,35 @@ RETURN
 
 ---
 
-## Query 10: Unified Entity Profile (Joining Entities with Populated Graph Analytics)
+## Query 10: Unified Entity Profile (Joining Graph Nodes with Analytics)
 
 ### Business Scenario
 After running Queries 7, 8, and 9 to populate `PageRankScore`, `CommunityId`, and `JaccardCommunityId`, query the merged 360° entity profile.
 
 ### How It Works
-Performs an optimized SQL `JOIN` between `Entities` and `EntityGraphAnalytics`.
+Uses `IndexEntityGraphAnalyticsByPageRank` to perform an instant index seek on the highest-ranking nodes in `EntityGraphAnalytics`, joining `GRAPH_TABLE(LEIGraph MATCH (e:Entity))` to fetch entity attributes in ~115ms.
 
 ```sql
 SELECT 
-    e.LEI,
-    e.LegalName,
-    e.EntityCategory,
-    e.EntityStatus,
+    g.LEI,
+    g.LegalName,
+    g.EntityCategory,
+    g.EntityStatus,
     a.PageRankScore,
     a.CommunityId,
     a.JaccardCommunityId,
     a.LastUpdated
-FROM Entities AS e
-JOIN EntityGraphAnalytics AS a ON e.LEI = a.LEI
+FROM EntityGraphAnalytics@{FORCE_INDEX=IndexEntityGraphAnalyticsByPageRank} AS a
+JOIN GRAPH_TABLE(
+    LEIGraph
+    MATCH (e:Entity)
+    COLUMNS (
+        e.LEI,
+        e.LegalName,
+        e.EntityCategory,
+        e.EntityStatus
+    )
+) AS g ON a.LEI = g.LEI
 ORDER BY a.PageRankScore DESC
 LIMIT 50;
 ```
@@ -372,23 +453,33 @@ LIMIT 50;
 ## Query 11: Web App Global PageRank Leaderboard (`Page Rank` Tab Query)
 
 ### Business Scenario
-Powers the **Page Rank** tab leaderboard inside the LEI Graph Explorer web application. Lists top legal entities ordered by precomputed link-structure centrality (`PageRankScore`), joined with entity master profile data.
+Powers the **Page Rank** tab leaderboard inside the LEI Graph Explorer web application. Lists top legal entities ordered by precomputed link-structure centrality (`PageRankScore`), joined with entity master graph nodes.
 
 ### How It Works
-Queries `EntityGraphAnalytics` joined directly with `Entities` to return the top network hubs (e.g. Custody Bank of Japan, Master Trust Bank of Japan, BlackRock Asset Management, UBS, etc.).
+Performs an index seek on `IndexEntityGraphAnalyticsByPageRank` joined directly with `GRAPH_TABLE(LEIGraph MATCH (e:Entity))` to return top network hubs (e.g. Custody Bank of Japan, Master Trust Bank of Japan, BlackRock Asset Management, UBS, etc.) in ~85ms.
 
 ```sql
 SELECT 
     a.LEI,
-    e.LegalName,
+    g.LegalName,
     a.PageRankScore,
     a.CommunityId,
     a.JaccardCommunityId,
-    e.EntityCategory,
-    e.LegalJurisdiction,
-    e.EntityStatus
-FROM EntityGraphAnalytics AS a
-JOIN Entities AS e ON a.LEI = e.LEI
+    g.EntityCategory,
+    g.LegalJurisdiction,
+    g.EntityStatus
+FROM EntityGraphAnalytics@{FORCE_INDEX=IndexEntityGraphAnalyticsByPageRank} AS a
+JOIN GRAPH_TABLE(
+    LEIGraph
+    MATCH (e:Entity)
+    COLUMNS (
+        e.LEI,
+        e.LegalName,
+        e.EntityCategory,
+        e.LegalJurisdiction,
+        e.EntityStatus
+    )
+) AS g ON a.LEI = g.LEI
 ORDER BY a.PageRankScore DESC
 LIMIT 20;
 ```
@@ -401,49 +492,95 @@ LIMIT 20;
 Retrieves all starting corporate entities belonging to a specific precomputed graph community cluster (e.g. Community `#1283192` matching **Alphabet Inc.** and its corporate entities, or Community `#815529` matching **Custody Bank of Japan**).
 
 ### How It Works
-Filters `EntityGraphAnalytics` by explicit Community ID literal `1283192` joined with `Entities`, ordering all starting community seed entities by individual PageRank centrality.
+Uses `IndexEntityGraphAnalyticsByCommunity` to perform an instant point seek for Community ID literal `1283192`, joined with `GRAPH_TABLE(LEIGraph MATCH (e:Entity))` to return community seed entities ordered by PageRank centrality in ~80ms.
 
 ```sql
 SELECT 
     a.LEI,
-    e.LegalName,
+    g.LegalName,
     a.PageRankScore,
     a.CommunityId,
-    e.EntityCategory,
-    e.LegalJurisdiction,
-    e.EntityStatus
-FROM EntityGraphAnalytics AS a
-JOIN Entities AS e ON a.LEI = e.LEI
+    g.EntityCategory,
+    g.LegalJurisdiction,
+    g.EntityStatus
+FROM EntityGraphAnalytics@{FORCE_INDEX=IndexEntityGraphAnalyticsByCommunity} AS a
+JOIN GRAPH_TABLE(
+    LEIGraph
+    MATCH (e:Entity)
+    COLUMNS (
+        e.LEI,
+        e.LegalName,
+        e.EntityCategory,
+        e.LegalJurisdiction,
+        e.EntityStatus
+    )
+) AS g ON a.LEI = g.LEI
 WHERE a.CommunityId = 1283192  -- Concrete starting point: Alphabet Inc. Community (#1283192)
 ORDER BY a.PageRankScore DESC;
 ```
 
 ---
 
-## Query 13: High-Performance Multi-Source Community Outward Reachability Graph Query
+## Query 13: Spanner `GRAPH_TABLE` Multi-Source Community Outward Reachability Graph Query
 
 ### Business Scenario
-Powers the **Community View** graph and reachability table in the application. Starting from **ALL entities within a community cluster simultaneously** as multi-source graph seeds (Alphabet Inc. cluster `#1283192` or Custody Bank `#815529`), traverses outward pathways up to 2 hops deep and ranks destinations by how many distinct community seed entities connect to each destination.
+Powers the **Community View** graph and reachability analysis in the application using Cloud Spanner's native **Property Graph GQL (`GRAPH_TABLE`)** query capabilities against `LEIGraph`. Starting from **ALL entities within a community cluster simultaneously** as multi-source graph seeds (Alphabet Inc. cluster `#1283192` or Custody Bank `#815529`), traverses graph paths up to 2 hops deep and ranks destinations by how many distinct community seed entities connect to each destination.
 
 ### How It Works
-Anchors the search on community seeds, utilizing primary-key point seeks on interleaved `EntityRelationships` across 1-hop and 2-hop frontiers to complete in ~2s.
+Anchors community seeds instantly via `IndexEntityGraphAnalyticsByCommunity`, performing indexed 1-hop and 2-hop `GRAPH_TABLE` edge pattern traversals in ~235ms.
 
 ```sql
 WITH CommSeeds AS (
-    SELECT LEI, LegalName
-    FROM EntityGraphAnalytics
-    JOIN Entities USING (LEI)
-    WHERE CommunityId = 1283192  -- Concrete starting point: Alphabet Inc. Community (#1283192)
+    SELECT a.LEI, g.LegalName
+    FROM EntityGraphAnalytics@{FORCE_INDEX=IndexEntityGraphAnalyticsByCommunity} AS a
+    JOIN GRAPH_TABLE(
+        LEIGraph
+        MATCH (e:Entity)
+        COLUMNS (e.LEI, e.LegalName)
+    ) AS g ON a.LEI = g.LEI
+    WHERE a.CommunityId = 1283192  -- Concrete starting point: Alphabet Inc. Community (#1283192)
 ),
 Hop1 AS (
-    SELECT s.LEI AS SeedLEI, r.EndLEI AS DestLEI, r.RelationshipType AS RelType, 1 AS HopDistance
+    SELECT 
+        g1.SeedLEI,
+        g1.DestLEI,
+        g1.DestName,
+        g1.EntityCategory,
+        g1.LegalJurisdiction,
+        1 AS HopDistance
     FROM CommSeeds AS s
-    JOIN EntityRelationships AS r ON s.LEI = r.LEI
+    JOIN GRAPH_TABLE(
+        LEIGraph
+        MATCH (e1:Entity)-[r:IS_RELATED_TO]->(e2:Entity)
+        COLUMNS (
+            e1.LEI AS SeedLEI,
+            e2.LEI AS DestLEI,
+            e2.LegalName AS DestName,
+            e2.EntityCategory AS EntityCategory,
+            e2.LegalJurisdiction AS LegalJurisdiction
+        )
+    ) AS g1 ON s.LEI = g1.SeedLEI
 ),
 Hop2 AS (
-    SELECT h1.SeedLEI, r2.EndLEI AS DestLEI, r2.RelationshipType AS RelType, 2 AS HopDistance
+    SELECT 
+        h1.SeedLEI,
+        g2.DestLEI,
+        g2.DestName,
+        g2.EntityCategory,
+        g2.LegalJurisdiction,
+        2 AS HopDistance
     FROM Hop1 AS h1
-    JOIN EntityRelationships AS r2 ON h1.DestLEI = r2.LEI
+    JOIN GRAPH_TABLE(
+        LEIGraph
+        MATCH (mid:Entity)-[r:IS_RELATED_TO]->(e2:Entity)
+        COLUMNS (
+            mid.LEI AS MidLEI,
+            e2.LEI AS DestLEI,
+            e2.LegalName AS DestName,
+            e2.EntityCategory AS EntityCategory,
+            e2.LegalJurisdiction AS LegalJurisdiction
+        )
+    ) AS g2 ON h1.DestLEI = g2.MidLEI
 ),
 CommOutwardGraph AS (
     SELECT * FROM Hop1
@@ -452,18 +589,17 @@ CommOutwardGraph AS (
 )
 SELECT 
     cg.DestLEI,
-    dest_e.LegalName AS DestinationName,
+    cg.DestName AS DestinationName,
     COUNT(DISTINCT cg.SeedLEI) AS ConnectedCommunitySeedsCount,
     19 AS TotalCommunitySeeds,
     ROUND((COUNT(DISTINCT cg.SeedLEI) / 19.0) * 100, 1) AS ConnectedSeedPercentage,
     MIN(cg.HopDistance) AS MinHopDistance,
     COALESCE(dest_a.PageRankScore, 0.0) AS PageRankScore,
-    dest_e.EntityCategory,
-    dest_e.LegalJurisdiction
+    cg.EntityCategory,
+    cg.LegalJurisdiction
 FROM CommOutwardGraph AS cg
-JOIN Entities AS dest_e ON cg.DestLEI = dest_e.LEI
 LEFT JOIN EntityGraphAnalytics AS dest_a ON cg.DestLEI = dest_a.LEI
-GROUP BY cg.DestLEI, dest_e.LegalName, dest_a.PageRankScore, dest_e.EntityCategory, dest_e.LegalJurisdiction
+GROUP BY cg.DestLEI, cg.DestName, dest_a.PageRankScore, cg.EntityCategory, cg.LegalJurisdiction
 ORDER BY ConnectedCommunitySeedsCount DESC, MinHopDistance ASC, PageRankScore DESC
 LIMIT 50;
 ```
